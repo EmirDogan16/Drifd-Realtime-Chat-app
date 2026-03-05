@@ -54,4 +54,7 @@ See [DRIFD_DEVELOPMENT_PROTOCOL.md](DRIFD_DEVELOPMENT_PROTOCOL.md) for detailed 
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+Copyright © 2026 Emir Dogan. All Rights Reserved.
+
+This software is proprietary and confidential. Unauthorized copying, modification, 
+distribution, or use of this software is strictly prohibited.
