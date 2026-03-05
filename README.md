@@ -1,28 +1,57 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
-
 # Drifd
 
-Drifd, Next.js 15 + Supabase temelli yüksek performanslı Discord klonu olarak evrimleştiriliyor.
+A high-performance Discord clone built with Next.js 15 and Supabase, featuring real-time messaging, voice/video channels, and a modern UI.
 
-## Çalıştırma
+## Features
 
-1. Bağımlılıkları kur:
-   `npm install`
-2. `.env.local` dosyası oluştur ve değerleri ekle:
-   - `NEXT_PUBLIC_SUPABASE_URL`
-   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-   - `NEXT_PUBLIC_LIVEKIT_URL`
-   - `LIVEKIT_API_KEY`
-   - `LIVEKIT_API_SECRET`
-3. Geliştirme sunucusunu başlat:
-   `npm run dev`
+- 🔐 Authentication with Supabase Auth
+- 💬 Real-time text messaging with polling and WebSocket fallback
+- 🎙️ Voice and video channels powered by LiveKit
+- 📁 File uploads and media sharing
+- 🎨 Modern Discord-like UI with Tailwind CSS
+- 🔒 Role-based permissions (Admin, Moderator, Guest)
+- 📊 Poll creation and voting system
+- 🔍 GIF search integration (Giphy/Klipy)
+- 👥 Friend system and direct messages
+- 📌 Server/channel management with categories
 
-## Veritabanı
+## Getting Started
 
-Supabase SQL Editor'a [supabase_schema.sql](supabase_schema.sql) dosyasını yapıştırıp çalıştır.
+1. Install dependencies:
+   ```bash
+   npm install
+   ```
 
-## Protokol
+2. Create a `.env.local` file and add your environment variables:
+   ```env
+   NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+   NEXT_PUBLIC_LIVEKIT_URL=your_livekit_url
+   LIVEKIT_API_KEY=your_livekit_api_key
+   LIVEKIT_API_SECRET=your_livekit_api_secret
+   ```
 
-Adım adım mimari geliştirme planı için [DRIFD_DEVELOPMENT_PROTOCOL.md](DRIFD_DEVELOPMENT_PROTOCOL.md) dosyasını kullan.
+3. Set up the database by running [supabase_schema.sql](supabase_schema.sql) in Supabase SQL Editor
+
+4. Start the development server:
+   ```bash
+   npm run dev
+   ```
+
+## Tech Stack
+
+- **Framework**: Next.js 15 (App Router)
+- **Database**: Supabase (PostgreSQL)
+- **Real-time**: Supabase Realtime + Custom Polling
+- **Voice/Video**: LiveKit
+- **Styling**: Tailwind CSS
+- **State Management**: React Query (TanStack Query)
+- **Authentication**: Supabase Auth
+
+## Project Structure
+
+See [DRIFD_DEVELOPMENT_PROTOCOL.md](DRIFD_DEVELOPMENT_PROTOCOL.md) for detailed architecture and development plan.
+
+## License
+
+MIT License - see [LICENSE](LICENSE) file for details.

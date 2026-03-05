@@ -96,16 +96,16 @@ export default async function DirectMessagesLayout({
               <path d="M20.0001 20.006H22.0001V19.006C22.0001 16.4433 20.2697 14.4415 17.5213 13.5352C19.0621 14.4354 20.0001 16.0891 20.0001 18.006V20.006Z"/>
               <path d="M14.8834 11.9077C16.6657 11.5044 18.0001 9.9077 18.0001 8.00598C18.0001 5.80098 16.206 4.00598 14.0001 4.00598C13.4693 4.00598 12.9649 4.10857 12.5026 4.29361C13.3996 5.22331 14.0001 6.54725 14.0001 8.00598C14.0001 9.50098 13.3749 10.8453 12.4352 11.7852C13.0892 11.9112 13.9751 11.9853 14.8834 11.9077Z"/>
             </svg>
-            <span className="text-sm font-medium">Arkadaşlar</span>
+            <span className="text-sm font-medium">Friends</span>
           </Link>
 
           <div className="px-2 py-2">
             <div className="text-xs font-semibold text-drifd-muted uppercase px-2 mb-1">
-              DİREKT MESAJLAR
+              DIRECT MESSAGES
             </div>
             {friendList.length === 0 ? (
               <div className="px-2 py-4 text-sm text-drifd-muted text-center">
-                Henüz mesaj yok
+                No messages yet
               </div>
             ) : (
               <DMFriendsList friends={friendList} />

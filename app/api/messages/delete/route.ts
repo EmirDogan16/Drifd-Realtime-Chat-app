@@ -109,7 +109,7 @@ export async function POST(request: Request) {
       .from(tableName)
       .update({ 
         deleted: true,
-        content: 'Bu mesaj silindi.',
+        content: 'This message was deleted.',
         fileurl: null,
         poll_data: null
       })

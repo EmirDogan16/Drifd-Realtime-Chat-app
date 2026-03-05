@@ -256,7 +256,7 @@ export function ChatInput({ channelId, memberId, isDM = false, currentProfileId 
           type="button"
           onClick={() => onOpen('uploadFile', { channelId, memberId })}
           className="flex h-6 w-6 items-center justify-center rounded-full text-drifd-muted transition-colors hover:bg-drifd-secondary hover:text-white"
-          title="Dosya Ekle"
+          title="Add File"
         >
           <Plus className="h-5 w-5" />
         </button>
@@ -266,7 +266,7 @@ export function ChatInput({ channelId, memberId, isDM = false, currentProfileId 
           type="button"
           onClick={() => onOpen('createPoll', { channelId, memberId })}
           className="flex h-6 w-6 items-center justify-center rounded-full text-drifd-muted transition-colors hover:bg-drifd-secondary hover:text-white"
-          title="Anket Oluştur"
+          title="Create Poll"
         >
           <BarChart3 className="h-5 w-5" />
         </button>
@@ -281,7 +281,7 @@ export function ChatInput({ channelId, memberId, isDM = false, currentProfileId 
             }
           }}
           className="flex-1 bg-transparent text-sm text-drifd-text outline-none placeholder:text-drifd-muted"
-          placeholder="Mesaj gönder..."
+          placeholder="Send a message..."
         />
 
         {/* GIF Button */}
@@ -310,7 +310,7 @@ export function ChatInput({ channelId, memberId, isDM = false, currentProfileId 
           <Smile className="h-5 w-5" />
         </button>
       </div>
-      {isDemoMode ? <p className="mt-2 text-xs text-drifd-muted">Demo kanalda mesaj gönderimi kapalı.</p> : null}
+      {isDemoMode ? <p className="mt-2 text-xs text-drifd-muted">Messaging is disabled in demo channels.</p> : null}
       {form.formState.errors.content?.message ? (
         <p className="mt-2 text-xs text-red-400">{form.formState.errors.content.message}</p>
       ) : null}

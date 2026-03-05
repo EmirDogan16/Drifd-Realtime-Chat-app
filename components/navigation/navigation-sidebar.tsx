@@ -60,7 +60,7 @@ export function NavigationSidebar() {
       <Link 
         href="/direct-messages"
         className="mb-2 flex h-12 w-12 items-center justify-center rounded-2xl bg-drifd-primary text-sm font-bold text-black hover:rounded-xl transition-all cursor-pointer"
-        title="Direkt Mesajlar"
+        title="Direct Messages"
       >
         D
       </Link>

@@ -232,7 +232,7 @@ export function ChatMessages({ messages, isFetchingNextPage, hasNextPage, onLoad
                         // TODO: Add reaction functionality
                       }}
                       className="flex h-8 w-8 items-center justify-center rounded hover:bg-drifd-hover transition-colors text-xl"
-                      title="Tepki ekle"
+                      title="Add reaction"
                     >
                       {emoji}
                     </button>
@@ -241,7 +241,7 @@ export function ChatMessages({ messages, isFetchingNextPage, hasNextPage, onLoad
                   <button
                     onClick={() => handleDropdownToggle(message.id)}
                     className="flex h-8 w-8 items-center justify-center rounded hover:bg-drifd-hover transition-colors"
-                    title="Daha fazla"
+                    title="More"
                   >
                     <MoreVertical className="h-5 w-5 text-drifd-muted" />
                   </button>
@@ -262,7 +262,7 @@ export function ChatMessages({ messages, isFetchingNextPage, hasNextPage, onLoad
                     className="w-full px-3 py-2 text-left text-sm text-drifd-text hover:bg-drifd-hover flex items-center gap-3"
                   >
                     <Smile className="h-4 w-4" />
-                    Tepki Ekle
+                    Add Reaction
                   </button>
                   
                   {isOwnMessage && !message.deleted && (
@@ -274,7 +274,7 @@ export function ChatMessages({ messages, isFetchingNextPage, hasNextPage, onLoad
                       className="w-full px-3 py-2 text-left text-sm text-drifd-text hover:bg-drifd-hover flex items-center gap-3"
                     >
                       <Edit2 className="h-4 w-4" />
-                      Mesajı Düzenle
+                      Edit Message
                     </button>
                   )}
                   
@@ -356,7 +356,7 @@ export function ChatMessages({ messages, isFetchingNextPage, hasNextPage, onLoad
                         className="w-full px-3 py-2 text-left text-sm text-red-400 hover:bg-drifd-hover flex items-center gap-3"
                       >
                         <Trash2 className="h-4 w-4" />
-                        Mesajı Sil
+                        Delete Message
                       </button>
                     </>
                   )}
