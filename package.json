@@ -1,0 +1,113 @@
+{
+  "name": "drifd",
+  "version": "1.0.0",
+  "description": "Discord-like communication platform",
+  "author": "Drifd Team",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "next dev",
+    "dev:win": "set NEXT_TELEMETRY_DISABLED=1&& set NEXT_TRACE_SPAN_THRESHOLD_MS=2147483647&& next dev",
+    "build": "next build",
+    "start": "next start",
+    "reset:prod": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/reset-prod.ps1",
+    "db:schema": "node scripts/apply-supabase-schema.mjs",
+    "db:check": "node scripts/check-supabase-schema.mjs",
+    "db:fix:members": "node scripts/fix-members-rls-recursion.mjs",
+    "lint": "next lint",
+    "electron:dev": "concurrently -k \"npm run dev\" \"wait-on http://localhost:3000 && electron ./electron/main.cjs\"",
+    "electron:dev:win": "concurrently -k \"npm run dev:win\" \"wait-on http://localhost:3000 && electron ./electron/main.cjs\"",
+    "electron:build": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/modifiers": "^9.0.0",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@hookform/resolvers": "^5.2.2",
+    "@livekit/components-react": "^2.9.19",
+    "@livekit/components-styles": "^1.2.0",
+    "@radix-ui/react-dialog": "^1.1.15",
+    "@supabase/ssr": "^0.5.2",
+    "@supabase/supabase-js": "^2.95.3",
+    "@tanstack/react-query": "^5.66.9",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "date-fns": "^4.1.0",
+    "dotenv": "^16.6.1",
+    "emoji-picker-react": "^4.18.0",
+    "livekit-client": "^2.17.1",
+    "livekit-server-sdk": "^2.15.0",
+    "lucide-react": "^0.563.0",
+    "next": "^15.2.0",
+    "pg": "^8.16.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-hook-form": "^7.71.1",
+    "tailwind-merge": "^3.3.0",
+    "tailwindcss-animate": "^1.0.7",
+    "twemoji": "^14.0.2",
+    "zod": "^4.3.6",
+    "zustand": "^5.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.2.1",
+    "electron": "^40.4.0",
+    "electron-builder": "^26.7.0",
+    "eslint": "^9.20.0",
+    "eslint-config-next": "^15.2.0",
+    "postcss": "^8.5.1",
+    "tailwindcss": "^3.4.17",
+    "typescript": "~5.8.2",
+    "wait-on": "^9.0.4"
+  },
+  "build": {
+    "appId": "com.drifd.app",
+    "productName": "Drifd",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      ".next/**/*",
+      "public/**/*",
+      "node_modules/**/*",
+      "package.json",
+      "next.config.mjs",
+      ".env.local"
+    ],
+    "extraResources": [
+      {
+        "from": ".",
+        "to": "app",
+        "filter": [
+          "**/*",
+          "!dist/**",
+          "!.git/**"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

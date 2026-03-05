@@ -1,0 +1,82 @@
+import { NextResponse } from 'next/server';
+import { createClient as createSupabaseServerClient } from '@/utils/supabase/server';
+import { createClient as createSupabaseAdminClient } from '@supabase/supabase-js';
+import type { Database } from '@/types/supabase';
+
+export async function POST() {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return NextResponse.json({ ok: false, error: 'Not signed in' }, { status: 401 });
+  }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          'Missing SUPABASE_SERVICE_ROLE_KEY. Add it to .env.local so the server can ensure your profiles row exists.',
+      },
+      { status: 500 },
+    );
+  }
+
+  const admin = createSupabaseAdminClient<Database>(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false },
+  });
+
+  const email = user.email ?? `${user.id}@drifd.local`;
+  const baseUsername =
+    (typeof user.user_metadata?.username === 'string' && user.user_metadata.username.trim()) ||
+    (user.email ? user.email.split('@')[0] : 'DrifdUser');
+  const username = `${baseUsername}`.slice(0, 20) + '-' + user.id.slice(0, 4);
+  const imageurl =
+    (typeof user.user_metadata?.imageUrl === 'string' && user.user_metadata.imageUrl.trim()) ?
+      user.user_metadata.imageUrl
+    : (typeof user.user_metadata?.avatar_url === 'string' && user.user_metadata.avatar_url.trim()) ?
+        user.user_metadata.avatar_url
+      : (typeof user.user_metadata?.picture === 'string' && user.user_metadata.picture.trim()) ?
+          user.user_metadata.picture
+        : null;
+
+  const { error } = await admin
+    .schema('public')
+    .from('profiles')
+    .upsert(
+      {
+        id: user.id,
+        email,
+        username,
+        imageurl,
+      },
+      { onConflict: 'id' },
+    );
+
+  if (error) {
+    const message = error.message || 'Unknown error';
+    const looksLikeMissingProfiles =
+      message.includes("Could not find the table 'public.profiles'") ||
+      message.toLowerCase().includes('schema cache') && message.toLowerCase().includes('profiles');
+
+    if (looksLikeMissingProfiles) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Supabase DB şeması kurulmamış görünüyor: public.profiles bulunamadı. Supabase Dashboard > SQL Editor'da repodaki supabase_schema.sql dosyasını çalıştır. Sonra Settings > API > Schemas kısmında 'public' seçili olduğundan emin ol. (Gerekirse SQL Editor'da: NOTIFY pgrst, 'reload schema';)",
+        },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+  }
+
+  return NextResponse.json({ ok: true });
+}
