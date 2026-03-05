@@ -1,4 +1,4 @@
-import { createAdminClient } from '@/utils/supabase/server';
+import { createAdminClient, createClient } from '@/utils/supabase/server';
 import { NextRequest, NextResponse } from 'next/server';
 
 export async function PATCH(req: NextRequest) {
@@ -12,6 +12,39 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json(
         { error: 'Missing required fields' },
         { status: 400 }
+      );
+    }
+
+    // Authentication check
+    const userSupabase = await createClient();
+    const { data: { user }, error: authError } = await userSupabase.auth.getUser();
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Authorization check - verify user is ADMIN, MODERATOR, or OWNER in this server
+    const { data: member, error: memberError } = await userSupabase
+      .from('members')
+      .select('role')
+      .eq('serverid', serverId)
+      .eq('profileid', user.id)
+      .single();
+
+    if (memberError || !member) {
+      return NextResponse.json(
+        { error: 'You are not a member of this server' },
+        { status: 403 }
+      );
+    }
+
+    if (!['ADMIN', 'MODERATOR', 'OWNER'].includes((member as any).role)) {
+      return NextResponse.json(
+        { error: 'You do not have permission to reorder channels' },
+        { status: 403 }
       );
     }
 
