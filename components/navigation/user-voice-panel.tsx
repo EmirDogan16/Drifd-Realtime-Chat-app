@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Mic, MicOff, Headphones, HeadphoneOff, Settings, ChevronDown, ChevronRight, Check, Circle, Moon, MinusCircle, EyeOff } from 'lucide-react';
 import { useVoiceSettings } from '@/hooks/use-voice-settings';
 import { useModalStore } from '@/hooks/use-modal-store';
@@ -12,31 +12,196 @@ interface UserVoicePanelProps {
   imageUrl: string | null;
 }
 
+/** Enumerate audio devices of a given kind */
+function useAudioDevices(kind: 'audioinput' | 'audiooutput') {
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const enumerate = async () => {
+      try {
+        // Request mic permission first so we get real labels
+        if (kind === 'audioinput') {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          stream.getTracks().forEach(t => t.stop());
+        }
+        const all = await navigator.mediaDevices.enumerateDevices();
+        if (mounted) setDevices(all.filter(d => d.kind === kind && d.deviceId));
+      } catch {
+        // Permission denied or no devices
+      }
+    };
+
+    enumerate();
+
+    const onChange = () => { enumerate(); };
+    navigator.mediaDevices.addEventListener('devicechange', onChange);
+
+    return () => {
+      mounted = false;
+      navigator.mediaDevices.removeEventListener('devicechange', onChange);
+    };
+  }, [kind]);
+
+  return devices;
+}
+
+/** Small inline mic-level meter */
+function useMicLevel(deviceId: string, volume: number) {
+  const [level, setLevel] = useState(0);
+  const ctxRef = useRef<AudioContext | null>(null);
+  const animRef = useRef<number>(0);
+
+  useEffect(() => {
+    let mounted = true;
+    let stream: MediaStream | null = null;
+
+    const start = async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { deviceId: deviceId ? { exact: deviceId } : undefined },
+        });
+
+        const ctx = new AudioContext();
+        ctxRef.current = ctx;
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        const gain = ctx.createGain();
+        gain.gain.value = volume / 100;
+        source.connect(gain);
+        gain.connect(analyser);
+        // Don't connect to destination — we just want to measure
+
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        const tick = () => {
+          if (!mounted) return;
+          analyser.getByteFrequencyData(data);
+          const avg = data.reduce((s, v) => s + v, 0) / data.length;
+          setLevel(Math.min(100, avg * 1.5));
+          animRef.current = requestAnimationFrame(tick);
+        };
+        tick();
+      } catch {
+        // ignore
+      }
+    };
+
+    start();
+
+    return () => {
+      mounted = false;
+      cancelAnimationFrame(animRef.current);
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      if (ctxRef.current) ctxRef.current.close();
+    };
+  }, [deviceId, volume]);
+
+  return level;
+}
+
 export function UserVoicePanel({ profileId, username: initialUsername, imageUrl: initialImageUrl }: UserVoicePanelProps) {
-  const { isMuted, isDeafened, toggleMute, toggleDeafen } = useVoiceSettings();
+  const voiceSettings = useVoiceSettings();
+  const { isMuted, isDeafened, toggleMute, toggleDeafen, update,
+    selectedInputDevice, selectedOutputDevice, inputVolume, outputVolume,
+    pushToTalk, pushToTalkKey } = voiceSettings;
   const { onOpen } = useModalStore();
   const [username, setUsername] = useState(initialUsername);
   const [imageUrl, setImageUrl] = useState(initialImageUrl);
   const [showInputMenu, setShowInputMenu] = useState(false);
   const [showOutputMenu, setShowOutputMenu] = useState(false);
   const [showProfileCard, setShowProfileCard] = useState(false);
+  const [showInputDevices, setShowInputDevices] = useState(false);
+  const [showOutputDevices, setShowOutputDevices] = useState(false);
   const [userStatus, setUserStatus] = useState<'online' | 'idle' | 'dnd' | 'invisible'>('online');
-  const [inputVolume, setInputVolume] = useState(75);
-  const [outputVolume, setOutputVolume] = useState(75);
-  const [pushToTalk, setPushToTalk] = useState(false);
+  const [isRecordingPttKey, setIsRecordingPttKey] = useState(false);
   
   const inputMenuRef = useRef<HTMLDivElement>(null);
   const outputMenuRef = useRef<HTMLDivElement>(null);
   const profileCardRef = useRef<HTMLDivElement>(null);
+
+  const inputDevices = useAudioDevices('audioinput');
+  const outputDevices = useAudioDevices('audiooutput');
+
+  // Live mic level for the volume meter
+  const micLevel = useMicLevel(selectedInputDevice, inputVolume);
+
+  // Push-to-talk keyboard handler
+  useEffect(() => {
+    if (!pushToTalk) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === pushToTalkKey && !e.repeat) {
+        // Unmute while key is held
+        const stored = JSON.parse(localStorage.getItem('drifd-voice-settings') || '{}');
+        if (stored.isMuted !== false) {
+          update({ isMuted: false });
+        }
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === pushToTalkKey) {
+        // Mute when key is released
+        update({ isMuted: true });
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+
+    // Start muted in PTT mode
+    if (!isMuted) {
+      update({ isMuted: true });
+    }
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [pushToTalk, pushToTalkKey, update]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // PTT key recording
+  useEffect(() => {
+    if (!isRecordingPttKey) return;
+
+    const handleKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      update({ pushToTalkKey: e.code });
+      setIsRecordingPttKey(false);
+    };
+
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [isRecordingPttKey, update]);
+
+  // Get a nice display name for a key code
+  const getKeyDisplayName = useCallback((code: string) => {
+    const map: Record<string, string> = {
+      'KeyV': 'V', 'KeyB': 'B', 'KeyN': 'N', 'KeyM': 'M',
+      'Space': 'Space', 'ShiftLeft': 'Left Shift', 'ShiftRight': 'Right Shift',
+      'ControlLeft': 'Left Ctrl', 'ControlRight': 'Right Ctrl',
+      'AltLeft': 'Left Alt', 'AltRight': 'Right Alt',
+      'CapsLock': 'Caps Lock', 'Tab': 'Tab',
+    };
+    if (map[code]) return map[code];
+    if (code.startsWith('Key')) return code.slice(3);
+    if (code.startsWith('Digit')) return code.slice(5);
+    return code;
+  }, []);
 
   // Close menus when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (inputMenuRef.current && !inputMenuRef.current.contains(event.target as Node)) {
         setShowInputMenu(false);
+        setShowInputDevices(false);
       }
       if (outputMenuRef.current && !outputMenuRef.current.contains(event.target as Node)) {
         setShowOutputMenu(false);
+        setShowOutputDevices(false);
       }
       if (profileCardRef.current && !profileCardRef.current.contains(event.target as Node)) {
         setShowProfileCard(false);
@@ -351,27 +516,51 @@ export function UserVoicePanel({ profileId, username: initialUsername, imageUrl:
           {showInputMenu && (
             <div className="absolute bottom-full left-0 mb-2 w-80 rounded-lg bg-drifd-tertiary border border-drifd-divider shadow-xl z-40 py-2">
               {/* Input Device */}
-              <div className="px-3 py-2">
-                <div className="flex items-center justify-between mb-2">
+              <div className="px-3 py-2 relative">
+                <button
+                  type="button"
+                  onClick={() => setShowInputDevices(!showInputDevices)}
+                  className="w-full flex items-center justify-between mb-1"
+                >
                   <span className="text-xs font-semibold text-white uppercase">Giriş Aygıtı</span>
-                  <ChevronRight className="h-3 w-3 text-drifd-muted" />
+                  <ChevronRight className={`h-3 w-3 text-drifd-muted transition-transform ${showInputDevices ? 'rotate-90' : ''}`} />
+                </button>
+                <div className="text-xs text-drifd-muted truncate">
+                  {selectedInputDevice
+                    ? (inputDevices.find(d => d.deviceId === selectedInputDevice)?.label || 'Seçili Cihaz')
+                    : 'Windows Varsayılanı'}
                 </div>
-                <div className="text-xs text-drifd-muted">
-                  Windows Varsayılanı (Mikrofon (Realtek(R) Audio))
-                </div>
-              </div>
 
-              <div className="h-px bg-drifd-divider my-1" />
-
-              {/* Input Profile */}
-              <div className="px-3 py-2">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-white uppercase">Giriş Profili</span>
-                  <ChevronRight className="h-3 w-3 text-drifd-muted" />
-                </div>
-                <div className="text-xs text-drifd-muted">
-                  Ses İzolasyonu
-                </div>
+                {/* Device submenu */}
+                {showInputDevices && (
+                  <div className="absolute left-full top-0 ml-2 w-72 rounded-lg bg-drifd-tertiary border border-drifd-divider shadow-xl z-50 py-1 max-h-64 overflow-y-auto">
+                    {/* Default option */}
+                    <button
+                      type="button"
+                      onClick={() => { update({ selectedInputDevice: '' }); setShowInputDevices(false); }}
+                      className="w-full flex items-center gap-2 px-3 py-2 hover:bg-drifd-hover transition-colors text-left"
+                    >
+                      <span className="text-xs text-white flex-1">Windows Varsayılanı</span>
+                      {selectedInputDevice === '' && <Check className="h-3 w-3 text-drifd-primary" />}
+                    </button>
+                    {inputDevices.map(device => (
+                      <button
+                        key={device.deviceId}
+                        type="button"
+                        onClick={() => { update({ selectedInputDevice: device.deviceId }); setShowInputDevices(false); }}
+                        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-drifd-hover transition-colors text-left"
+                      >
+                        <span className="text-xs text-white flex-1 truncate">{device.label || `Mikrofon ${device.deviceId.slice(0,8)}`}</span>
+                        {selectedInputDevice === device.deviceId && <Check className="h-3 w-3 text-drifd-primary" />}
+                      </button>
+                    ))}
+                    {inputDevices.length === 0 && (
+                      <div className="px-3 py-2 text-xs text-drifd-muted">
+                        Mikrofon bulunamadı
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="h-px bg-drifd-divider my-1" />
@@ -384,12 +573,23 @@ export function UserVoicePanel({ profileId, username: initialUsername, imageUrl:
                   min="0"
                   max="100"
                   value={inputVolume}
-                  onChange={(e) => setInputVolume(Number(e.target.value))}
+                  onChange={(e) => update({ inputVolume: Number(e.target.value) })}
                   className="w-full h-1 bg-drifd-divider rounded-lg appearance-none cursor-pointer accent-drifd-primary"
                   style={{
                     background: `linear-gradient(to right, #5865F2 0%, #5865F2 ${inputVolume}%, #3f4147 ${inputVolume}%, #3f4147 100%)`
                   }}
                 />
+                <div className="flex justify-between mt-1">
+                  <span className="text-[10px] text-drifd-muted">{inputVolume}%</span>
+                </div>
+                {/* Mic level indicator */}
+                <div className="mt-2 h-1.5 w-full rounded-full bg-drifd-divider overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-green-500 transition-all duration-75"
+                    style={{ width: `${micLevel}%` }}
+                  />
+                </div>
+                <span className="text-[10px] text-drifd-muted mt-0.5 block">Mikrofon seviyesi</span>
               </div>
 
               <div className="h-px bg-drifd-divider my-1" />
@@ -402,7 +602,7 @@ export function UserVoicePanel({ profileId, username: initialUsername, imageUrl:
                     <input
                       type="checkbox"
                       checked={pushToTalk}
-                      onChange={(e) => setPushToTalk(e.target.checked)}
+                      onChange={(e) => update({ pushToTalk: e.target.checked })}
                       className="sr-only"
                     />
                     <div className={`w-10 h-5 rounded-full transition-colors ${pushToTalk ? 'bg-drifd-primary' : 'bg-drifd-divider'}`}>
@@ -410,6 +610,23 @@ export function UserVoicePanel({ profileId, username: initialUsername, imageUrl:
                     </div>
                   </div>
                 </label>
+                {/* PTT Key Binding */}
+                {pushToTalk && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="text-[10px] text-drifd-muted">Tuş:</span>
+                    <button
+                      type="button"
+                      onClick={() => setIsRecordingPttKey(true)}
+                      className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors ${
+                        isRecordingPttKey
+                          ? 'bg-drifd-primary text-white animate-pulse'
+                          : 'bg-drifd-divider text-white hover:bg-drifd-hover'
+                      }`}
+                    >
+                      {isRecordingPttKey ? 'Bir tuşa bas...' : getKeyDisplayName(pushToTalkKey)}
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="h-px bg-drifd-divider my-1" />
@@ -419,6 +636,7 @@ export function UserVoicePanel({ profileId, username: initialUsername, imageUrl:
                 type="button"
                 onClick={() => {
                   setShowInputMenu(false);
+                  setShowInputDevices(false);
                   onOpen('userSettings');
                 }}
                 className="w-full px-3 py-2 flex items-center justify-between hover:bg-drifd-hover transition-colors"
@@ -465,14 +683,50 @@ export function UserVoicePanel({ profileId, username: initialUsername, imageUrl:
           {showOutputMenu && (
             <div className="absolute bottom-full left-0 mb-2 w-80 rounded-lg bg-drifd-tertiary border border-drifd-divider shadow-xl z-40 py-2">
               {/* Output Device */}
-              <div className="px-3 py-2">
-                <div className="flex items-center justify-between mb-2">
+              <div className="px-3 py-2 relative">
+                <button
+                  type="button"
+                  onClick={() => setShowOutputDevices(!showOutputDevices)}
+                  className="w-full flex items-center justify-between mb-1"
+                >
                   <span className="text-xs font-semibold text-white uppercase">Çıkış Aygıtı</span>
-                  <ChevronRight className="h-3 w-3 text-drifd-muted" />
+                  <ChevronRight className={`h-3 w-3 text-drifd-muted transition-transform ${showOutputDevices ? 'rotate-90' : ''}`} />
+                </button>
+                <div className="text-xs text-drifd-muted truncate">
+                  {selectedOutputDevice
+                    ? (outputDevices.find(d => d.deviceId === selectedOutputDevice)?.label || 'Seçili Cihaz')
+                    : 'Windows Varsayılanı'}
                 </div>
-                <div className="text-xs text-drifd-muted">
-                  Hoparlör (Realtek(R) Audio)
-                </div>
+
+                {/* Device submenu */}
+                {showOutputDevices && (
+                  <div className="absolute left-full top-0 ml-2 w-72 rounded-lg bg-drifd-tertiary border border-drifd-divider shadow-xl z-50 py-1 max-h-64 overflow-y-auto">
+                    <button
+                      type="button"
+                      onClick={() => { update({ selectedOutputDevice: '' }); setShowOutputDevices(false); }}
+                      className="w-full flex items-center gap-2 px-3 py-2 hover:bg-drifd-hover transition-colors text-left"
+                    >
+                      <span className="text-xs text-white flex-1">Windows Varsayılanı</span>
+                      {selectedOutputDevice === '' && <Check className="h-3 w-3 text-drifd-primary" />}
+                    </button>
+                    {outputDevices.map(device => (
+                      <button
+                        key={device.deviceId}
+                        type="button"
+                        onClick={() => { update({ selectedOutputDevice: device.deviceId }); setShowOutputDevices(false); }}
+                        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-drifd-hover transition-colors text-left"
+                      >
+                        <span className="text-xs text-white flex-1 truncate">{device.label || `Hoparlör ${device.deviceId.slice(0,8)}`}</span>
+                        {selectedOutputDevice === device.deviceId && <Check className="h-3 w-3 text-drifd-primary" />}
+                      </button>
+                    ))}
+                    {outputDevices.length === 0 && (
+                      <div className="px-3 py-2 text-xs text-drifd-muted">
+                        Çıkış cihazı bulunamadı
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="h-px bg-drifd-divider my-1" />
@@ -485,12 +739,15 @@ export function UserVoicePanel({ profileId, username: initialUsername, imageUrl:
                   min="0"
                   max="100"
                   value={outputVolume}
-                  onChange={(e) => setOutputVolume(Number(e.target.value))}
+                  onChange={(e) => update({ outputVolume: Number(e.target.value) })}
                   className="w-full h-1 bg-drifd-divider rounded-lg appearance-none cursor-pointer accent-drifd-primary"
                   style={{
                     background: `linear-gradient(to right, #5865F2 0%, #5865F2 ${outputVolume}%, #3f4147 ${outputVolume}%, #3f4147 100%)`
                   }}
                 />
+                <div className="flex justify-between mt-1">
+                  <span className="text-[10px] text-drifd-muted">{outputVolume}%</span>
+                </div>
               </div>
 
               <div className="h-px bg-drifd-divider my-1" />
@@ -500,6 +757,7 @@ export function UserVoicePanel({ profileId, username: initialUsername, imageUrl:
                 type="button"
                 onClick={() => {
                   setShowOutputMenu(false);
+                  setShowOutputDevices(false);
                   onOpen('userSettings');
                 }}
                 className="w-full px-3 py-2 flex items-center justify-between hover:bg-drifd-hover transition-colors"

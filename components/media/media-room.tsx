@@ -132,6 +132,40 @@ function VoiceStreamingLayout() {
   );
 }
 
+/** Applies output volume from voice settings to all <audio> elements rendered by LiveKit */
+function OutputVolumeController() {
+  useEffect(() => {
+    const applyVolume = () => {
+      try {
+        const stored = localStorage.getItem('drifd-voice-settings');
+        if (!stored) return;
+        const settings = JSON.parse(stored);
+        const vol = typeof settings.outputVolume === 'number' ? settings.outputVolume / 100 : 1;
+        // LiveKit renders <audio> elements for remote participants
+        document.querySelectorAll('audio').forEach(el => {
+          el.volume = Math.max(0, Math.min(1, vol));
+        });
+      } catch { /* ignore */ }
+    };
+
+    applyVolume();
+
+    // Re-apply when settings change
+    const handler = () => applyVolume();
+    window.addEventListener('voice-settings-changed', handler);
+
+    // Also periodically apply in case new audio elements are created
+    const interval = setInterval(applyVolume, 1000);
+
+    return () => {
+      window.removeEventListener('voice-settings-changed', handler);
+      clearInterval(interval);
+    };
+  }, []);
+
+  return null;
+}
+
 function DiscordControlBar({ showCamera, onLeave }: { showCamera: boolean; onLeave: () => void }) {
   const room = useRoomContext();
   const { localParticipant, isMicrophoneEnabled, isCameraEnabled, isScreenShareEnabled } = useLocalParticipant();
@@ -145,11 +179,32 @@ function DiscordControlBar({ showCamera, onLeave }: { showCamera: boolean; onLea
       try {
         const stored = localStorage.getItem('drifd-voice-settings');
         if (stored) {
-          const settings = JSON.parse(stored) as { isMuted: boolean; isDeafened: boolean };
+          const settings = JSON.parse(stored) as {
+            isMuted: boolean;
+            isDeafened: boolean;
+            selectedInputDevice?: string;
+            inputVolume?: number;
+            selectedOutputDevice?: string;
+            outputVolume?: number;
+          };
           
           // Apply mute state if different from current
           if (settings.isMuted !== !isMicrophoneEnabled) {
             await localParticipant.setMicrophoneEnabled(!settings.isMuted);
+          }
+
+          // Apply selected input device
+          if (settings.selectedInputDevice) {
+            try {
+              await room.switchActiveDevice('audioinput', settings.selectedInputDevice);
+            } catch { /* device might not be available */ }
+          }
+
+          // Apply selected output device
+          if (settings.selectedOutputDevice) {
+            try {
+              await room.switchActiveDevice('audiooutput', settings.selectedOutputDevice);
+            } catch { /* device might not be available */ }
           }
         }
       } catch {
@@ -162,9 +217,26 @@ function DiscordControlBar({ showCamera, onLeave }: { showCamera: boolean; onLea
 
     // Listen for changes from UserVoicePanel
     const handleVoiceSettingsChanged = (event: Event) => {
-      const customEvent = event as CustomEvent<{ isMuted: boolean; isDeafened: boolean }>;
+      const customEvent = event as CustomEvent<{
+        isMuted: boolean;
+        isDeafened: boolean;
+        selectedInputDevice?: string;
+        inputVolume?: number;
+        selectedOutputDevice?: string;
+        outputVolume?: number;
+      }>;
       if (customEvent.detail) {
         void localParticipant.setMicrophoneEnabled(!customEvent.detail.isMuted);
+
+        // Switch input device if changed
+        if (typeof customEvent.detail.selectedInputDevice === 'string') {
+          room.switchActiveDevice('audioinput', customEvent.detail.selectedInputDevice || 'default').catch(() => {});
+        }
+
+        // Switch output device if changed
+        if (typeof customEvent.detail.selectedOutputDevice === 'string') {
+          room.switchActiveDevice('audiooutput', customEvent.detail.selectedOutputDevice || 'default').catch(() => {});
+        }
       }
     };
 
@@ -173,7 +245,7 @@ function DiscordControlBar({ showCamera, onLeave }: { showCamera: boolean; onLea
     return () => {
       window.removeEventListener('voice-settings-changed', handleVoiceSettingsChanged);
     };
-  }, [localParticipant, isMicrophoneEnabled]);
+  }, [localParticipant, isMicrophoneEnabled, room]);
 
   const toggleMicrophone = async () => {
     if (busy) return;
@@ -369,15 +441,27 @@ export function MediaRoom({ channelId, channelName, channelType }: MediaRoomProp
   const handleJoinChannel = async () => {
     setPermissionError(null);
     setIsRequesting(true);
+
+    // Read selected input device from stored settings
+    let selectedDevice: string | undefined;
+    try {
+      const stored = localStorage.getItem('drifd-voice-settings');
+      if (stored) {
+        const s = JSON.parse(stored);
+        if (s.selectedInputDevice) selectedDevice = s.selectedInputDevice;
+      }
+    } catch { /* ignore */ }
     
     // Request appropriate permissions based on channel type
     try {
+      const audioConstraints: MediaStreamConstraints['audio'] = selectedDevice
+        ? { deviceId: { exact: selectedDevice } }
+        : true;
+
       if (channelType === 'VIDEO') {
-        // For video channels, request both audio and video
-        await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+        await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: true });
       } else {
-        // For audio-only channels, request only microphone
-        await navigator.mediaDevices.getUserMedia({ audio: true });
+        await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
       }
       
       // Permissions granted, connect to room
@@ -461,18 +545,29 @@ export function MediaRoom({ channelId, channelName, channelType }: MediaRoomProp
 
   const isAudioOnly = channelType === 'AUDIO';
 
+  // Read stored voice settings for device selection
+  let storedInputDevice: string | undefined;
+  try {
+    const stored = localStorage.getItem('drifd-voice-settings');
+    if (stored) {
+      const s = JSON.parse(stored);
+      if (s.selectedInputDevice) storedInputDevice = s.selectedInputDevice;
+    }
+  } catch { /* ignore */ }
+
   return (
     <div className="h-screen w-full bg-drifd-tertiary">
       <LiveKitRoom
         token={token}
         serverUrl={serverUrl}
         connect={isConnected}
-        audio={true}
+        audio={storedInputDevice ? { deviceId: { exact: storedInputDevice } } : true}
         video={!isAudioOnly}
         data-lk-theme="default"
         className="h-full"
       >
         <RoomAudioRenderer />
+        <OutputVolumeController />
         {isAudioOnly ? (
           <div className="h-[calc(100%-64px)]">
             <div className="flex h-12 items-center justify-between border-b border-drifd-divider px-4">
