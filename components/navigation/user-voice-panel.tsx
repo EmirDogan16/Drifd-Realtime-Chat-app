@@ -94,7 +94,9 @@ function useMicLevel(deviceId: string, volume: number) {
       mounted = false;
       cancelAnimationFrame(animRef.current);
       if (stream) stream.getTracks().forEach(t => t.stop());
-      if (ctxRef.current) ctxRef.current.close();
+      if (ctxRef.current && ctxRef.current.state !== 'closed') {
+        ctxRef.current.close().catch(() => {});
+      }
     };
   }, [deviceId, volume]);
 
