@@ -21,11 +21,8 @@ function useAudioDevices(kind: 'audioinput' | 'audiooutput') {
 
     const enumerate = async () => {
       try {
-        // Request mic permission first so we get real labels
-        if (kind === 'audioinput') {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          stream.getTracks().forEach(t => t.stop());
-        }
+        // Do not request microphone access on app load.
+        // Labels may be empty until user grants permission in a voice flow.
         const all = await navigator.mediaDevices.enumerateDevices();
         if (mounted) setDevices(all.filter(d => d.kind === kind && d.deviceId));
       } catch {
@@ -48,12 +45,17 @@ function useAudioDevices(kind: 'audioinput' | 'audiooutput') {
 }
 
 /** Small inline mic-level meter */
-function useMicLevel(deviceId: string, volume: number) {
+function useMicLevel(deviceId: string, volume: number, enabled: boolean) {
   const [level, setLevel] = useState(0);
   const ctxRef = useRef<AudioContext | null>(null);
   const animRef = useRef<number>(0);
 
   useEffect(() => {
+    if (!enabled) {
+      setLevel(0);
+      return;
+    }
+
     let mounted = true;
     let stream: MediaStream | null = null;
 
@@ -98,7 +100,7 @@ function useMicLevel(deviceId: string, volume: number) {
         ctxRef.current.close().catch(() => {});
       }
     };
-  }, [deviceId, volume]);
+  }, [deviceId, volume, enabled]);
 
   return level;
 }
@@ -118,6 +120,8 @@ export function UserVoicePanel({ profileId, username: initialUsername, imageUrl:
   const [showOutputDevices, setShowOutputDevices] = useState(false);
   const [userStatus, setUserStatus] = useState<'online' | 'idle' | 'dnd' | 'invisible'>('online');
   const [isRecordingPttKey, setIsRecordingPttKey] = useState(false);
+  const presenceSyncInFlightRef = useRef(false);
+  const lastPresenceSyncRef = useRef<string | null>(null);
   
   const inputMenuRef = useRef<HTMLDivElement>(null);
   const outputMenuRef = useRef<HTMLDivElement>(null);
@@ -126,8 +130,14 @@ export function UserVoicePanel({ profileId, username: initialUsername, imageUrl:
   const inputDevices = useAudioDevices('audioinput');
   const outputDevices = useAudioDevices('audiooutput');
 
+  // Keep local profile display synchronized with server component prop updates.
+  useEffect(() => {
+    setUsername(initialUsername);
+    setImageUrl(initialImageUrl);
+  }, [initialUsername, initialImageUrl]);
+
   // Live mic level for the volume meter
-  const micLevel = useMicLevel(selectedInputDevice, inputVolume);
+  const micLevel = useMicLevel(selectedInputDevice, inputVolume, showInputMenu);
 
   // Push-to-talk keyboard handler
   useEffect(() => {
@@ -214,12 +224,14 @@ export function UserVoicePanel({ profileId, username: initialUsername, imageUrl:
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Poll profile updates periodically
+  // Keep profile card fresh with realtime updates + light fallback polling
   useEffect(() => {
     const supabase = createClient();
     let lastUsername = initialUsername;
     let lastImageUrl = initialImageUrl;
     let lastStatus: string | null = null;
+    let active = true;
+    let profileChannel: any = null;
     
     const refreshProfile = async () => {
       const { data: profile } = await supabase
@@ -228,6 +240,8 @@ export function UserVoicePanel({ profileId, username: initialUsername, imageUrl:
         .eq('id', profileId)
         .single() as { data: { username: string; imageurl: string | null; status: 'online' | 'idle' | 'dnd' | 'invisible' | null } | null };
       
+      if (!active || !profile) return;
+
       if (profile) {
         if (profile.username !== lastUsername || profile.imageurl !== lastImageUrl) {
           console.log('[UserVoicePanel] Profile updated:', profile);
@@ -244,33 +258,115 @@ export function UserVoicePanel({ profileId, username: initialUsername, imageUrl:
     };
     
     // Initial load
-    refreshProfile();
-    
-    // Poll every 1 second for fast updates
-    const interval = setInterval(refreshProfile, 1000);
+    void refreshProfile();
+
+    profileChannel = (supabase as any)
+      .channel(`user-voice-panel-profile-${profileId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'profiles',
+          filter: `id=eq.${profileId}`,
+        },
+        (payload: any) => {
+          const next = payload?.new as { username?: string; imageurl?: string | null; status?: 'online' | 'idle' | 'dnd' | 'invisible' | null } | undefined;
+          if (!next) return;
+
+          if (typeof next.username === 'string' && next.username !== lastUsername) {
+            setUsername(next.username);
+            lastUsername = next.username;
+          }
+
+          if (next.imageurl !== undefined && next.imageurl !== lastImageUrl) {
+            setImageUrl(next.imageurl ?? null);
+            lastImageUrl = next.imageurl ?? null;
+          }
+
+          if (next.status && next.status !== lastStatus) {
+            setUserStatus(next.status);
+            lastStatus = next.status;
+          }
+        },
+      )
+      .subscribe();
+
+    const handleProfileUpdated = (event: Event) => {
+      const customEvent = event as CustomEvent<{ profileId?: string; username?: string; imageurl?: string | null }>;
+      if (customEvent.detail?.profileId !== profileId) return;
+
+      const nextUsername = customEvent.detail?.username;
+      const nextImageUrl = customEvent.detail?.imageurl;
+
+      if (typeof nextUsername === 'string' && nextUsername.trim()) {
+        setUsername(nextUsername);
+        lastUsername = nextUsername;
+      }
+
+      if (nextImageUrl !== undefined) {
+        setImageUrl(nextImageUrl ?? null);
+        lastImageUrl = nextImageUrl ?? null;
+      }
+
+      // Ensure status also converges in case profile write happened through another surface.
+      void refreshProfile();
+    };
+
+    window.addEventListener('profile-updated', handleProfileUpdated as EventListener);
+
+    // Fallback polling for cases where realtime is temporarily unavailable
+    const interval = setInterval(() => {
+      void refreshProfile();
+    }, 15000);
     
     return () => {
+      active = false;
       clearInterval(interval);
+      window.removeEventListener('profile-updated', handleProfileUpdated as EventListener);
+      if (profileChannel) {
+        try {
+          (supabase as any).removeChannel(profileChannel);
+        } catch {
+          // ignore
+        }
+      }
     };
   }, [profileId, initialUsername, initialImageUrl]);
 
-  // Heartbeat: Update last_seen every 30 seconds
+  // Heartbeat: update last_seen with a conservative interval to avoid request storms
   useEffect(() => {
     const supabase = createClient();
+    let active = true;
+    let authMismatchLogged = false;
+    let resolvedUserId: string | null = null;
+
+    const resolveUserId = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!active) return;
+      resolvedUserId = user?.id ?? null;
+    };
     
     const updateLastSeen = async () => {
-      // Verify we have the right user ID
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      if (!user || user.id !== profileId) {
-        console.error('[UserVoicePanel] ProfileId mismatch:', { 
-          authUserId: user?.id, 
-          profileId 
-        });
+      if (resolvedUserId == null) {
+        await resolveUserId();
+      }
+
+      // If auth user is not available yet, skip heartbeat silently until it resolves.
+      if (!resolvedUserId) {
+        return;
+      }
+
+      if (resolvedUserId !== profileId) {
+        // During fast account switching/logout transitions this can temporarily diverge.
+        // Skip heartbeat silently to avoid noisy console warnings.
+        if (!authMismatchLogged) {
+          authMismatchLogged = true;
+        }
         return;
       }
       
-      const { error } = await supabase
+      const { error } = await (supabase as any)
         .from('profiles')
         .update({ last_seen: new Date().toISOString() })
         .eq('id', profileId);
@@ -280,31 +376,67 @@ export function UserVoicePanel({ profileId, username: initialUsername, imageUrl:
       }
     };
 
-    // Initial heartbeat
-    updateLastSeen();
+    void resolveUserId();
+    void updateLastSeen();
 
-    // Send heartbeat every 2 seconds
-    const heartbeatInterval = setInterval(updateLastSeen, 2000);
+    // Send heartbeat every 30 seconds
+    const heartbeatInterval = setInterval(() => {
+      void updateLastSeen();
+    }, 30000);
 
     return () => {
+      active = false;
       clearInterval(heartbeatInterval);
     };
   }, [profileId]);
 
+  // Keep global voice presence state in sync even when controls are used from sidebar panel.
+  useEffect(() => {
+    const syncVoicePresenceState = async () => {
+      if (presenceSyncInFlightRef.current) return;
+
+      const signature = `${isMuted}:${isDeafened}`;
+      if (lastPresenceSyncRef.current === signature) return;
+
+      presenceSyncInFlightRef.current = true;
+      try {
+        const currentResponse = await fetch('/api/voice/presence/current', { method: 'GET', cache: 'no-store' });
+
+        if (!currentResponse.ok) return;
+
+        const currentBody = (await currentResponse.json().catch(() => ({}))) as {
+          currentChannelId?: string | null;
+        };
+
+        const currentChannelId = currentBody.currentChannelId;
+        if (!currentChannelId) return;
+
+        await fetch('/api/voice/presence/heartbeat', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            channelId: currentChannelId,
+            isMuted,
+            isDeafened,
+          }),
+          keepalive: true,
+        }).catch(() => {});
+
+        lastPresenceSyncRef.current = signature;
+      } finally {
+        presenceSyncInFlightRef.current = false;
+      }
+    };
+
+    void syncVoicePresenceState();
+  }, [isMuted, isDeafened]);
+
   // Set offline when page is closed/unloaded
   useEffect(() => {
-    const supabase = createClient();
-
-    const handleBeforeUnload = async () => {
+    const handleBeforeUnload = () => {
       // Use sendBeacon for reliability when page is closing
       const url = `/api/profile/offline`;
       navigator.sendBeacon(url, JSON.stringify({ profileId }));
-      
-      // Also try direct update (may not complete if page closes quickly)
-      await supabase
-        .from('profiles')
-        .update({ status: 'offline' })
-        .eq('id', profileId);
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
@@ -415,7 +547,7 @@ export function UserVoicePanel({ profileId, username: initialUsername, imageUrl:
                     setUserStatus(status.value);
                     // Update status in database
                     const supabase = createClient();
-                    await supabase.from('profiles').update({ status: status.value }).eq('id', profileId);
+                    await (supabase as any).from('profiles').update({ status: status.value }).eq('id', profileId);
                   }}
                   className="w-full flex items-center gap-3 rounded px-2 py-2 hover:bg-[#3f4147] hover:text-white transition-colors group"
                 >
@@ -598,20 +730,25 @@ export function UserVoicePanel({ profileId, username: initialUsername, imageUrl:
 
               {/* Push to Talk */}
               <div className="px-3 py-2">
-                <label className="flex items-center justify-between cursor-pointer">
+                <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold text-white uppercase">Bas-Konuş</span>
-                  <div className="relative">
-                    <input
-                      type="checkbox"
-                      checked={pushToTalk}
-                      onChange={(e) => update({ pushToTalk: e.target.checked })}
-                      className="sr-only"
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={pushToTalk}
+                    onClick={() => update({ pushToTalk: !pushToTalk })}
+                    className={`relative inline-flex h-5 w-10 items-center rounded-full p-0.5 transition-colors ${
+                      pushToTalk ? 'bg-drifd-primary' : 'bg-drifd-divider'
+                    }`}
+                    title={pushToTalk ? 'Bas-Konuş açık' : 'Bas-Konuş kapalı'}
+                  >
+                    <span
+                      className={`h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-200 ease-in-out ${
+                        pushToTalk ? 'translate-x-5' : 'translate-x-0'
+                      }`}
                     />
-                    <div className={`w-10 h-5 rounded-full transition-colors ${pushToTalk ? 'bg-drifd-primary' : 'bg-drifd-divider'}`}>
-                      <div className={`w-4 h-4 rounded-full bg-white transition-transform duration-200 ease-in-out transform ${pushToTalk ? 'translate-x-5' : 'translate-x-0.5'} mt-0.5`} />
-                    </div>
-                  </div>
-                </label>
+                  </button>
+                </div>
                 {/* PTT Key Binding */}
                 {pushToTalk && (
                   <div className="mt-2 flex items-center gap-2">
@@ -619,9 +756,9 @@ export function UserVoicePanel({ profileId, username: initialUsername, imageUrl:
                     <button
                       type="button"
                       onClick={() => setIsRecordingPttKey(true)}
-                      className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors ${
+                      className={`min-w-[84px] px-2 py-0.5 rounded text-[10px] font-mono text-center transition-colors ${
                         isRecordingPttKey
-                          ? 'bg-drifd-primary text-white animate-pulse'
+                          ? 'bg-drifd-primary text-white ring-1 ring-white/20 animate-pulse'
                           : 'bg-drifd-divider text-white hover:bg-drifd-hover'
                       }`}
                     >

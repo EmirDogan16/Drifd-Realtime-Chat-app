@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { ChevronDown, Settings, UserPlus, Link, Bell, BellOff, LogOut, Trash2, FolderPlus } from 'lucide-react';
 import { useModalStore } from '@/hooks/use-modal-store';
+import { useNotificationPreferences } from '@/hooks/use-notification-preferences';
 
 interface ServerHeaderProps {
   serverName: string;
@@ -15,10 +16,10 @@ interface ServerHeaderProps {
 export function ServerHeader({ serverName, serverId, inviteCode, isOwner = false, isAdmin = false }: ServerHeaderProps) {
   const { onOpen } = useModalStore();
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const { isServerMuted: isMuted, toggleServerMute } = useNotificationPreferences(serverId);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -42,7 +43,7 @@ export function ServerHeader({ serverName, serverId, inviteCode, isOwner = false
   };
 
   const handleMuteToggle = () => {
-    setIsMuted(!isMuted);
+    void toggleServerMute();
     setIsDropdownOpen(false);
   };
 

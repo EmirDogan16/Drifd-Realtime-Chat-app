@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-type ModalType = 'createServer' | 'createChannel' | 'inviteMembers' | 'createCategory' | 'editCategory' | 'deleteCategory' | 'userSettings' | 'createPoll' | 'uploadFile' | 'pollVoters' | 'channelSettings' | 'textChannelSettings' | 'serverSettings' | null;
+type ModalType = 'createServer' | 'createChannel' | 'inviteMembers' | 'createCategory' | 'editCategory' | 'deleteCategory' | 'userSettings' | 'createPoll' | 'uploadFile' | 'pollVoters' | 'channelSettings' | 'textChannelSettings' | 'serverSettings' | 'forwardMessage' | null;
 
 interface ModalData {
   serverId?: string;
@@ -15,6 +15,9 @@ interface ModalData {
   messageId?: string;
   categoryId?: string;
   categoryName?: string;
+  forwardContent?: string;
+  forwardFileUrl?: string | null;
+  forwardAuthorName?: string;
 }
 
 interface ModalStore {

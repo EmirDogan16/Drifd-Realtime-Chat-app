@@ -1,7 +1,26 @@
 create extension if not exists "pgcrypto";
 
-create type public.role as enum ('ADMIN', 'MODERATOR', 'GUEST');
-create type public.channel_type as enum ('TEXT', 'AUDIO', 'VIDEO');
+do $$
+begin
+  if not exists (
+    select 1 from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'role' and n.nspname = 'public'
+  ) then
+    create type public.role as enum ('ADMIN', 'MODERATOR', 'GUEST');
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'channel_type' and n.nspname = 'public'
+  ) then
+    create type public.channel_type as enum ('TEXT', 'AUDIO', 'VIDEO');
+  end if;
+end $$;
 
 create or replace function public.set_updated_at()
 returns trigger
@@ -109,6 +128,30 @@ create table if not exists public.banned_users (
   unique (serverid, profileid)
 );
 
+create table if not exists public.voice_channel_presence (
+  id uuid primary key default gen_random_uuid(),
+  serverid uuid not null references public.servers(id) on delete cascade,
+  channelid uuid not null references public.channels(id) on delete cascade,
+  profileid uuid not null references public.profiles(id) on delete cascade,
+  is_muted boolean not null default false,
+  is_deafened boolean not null default false,
+  joined_at timestamptz not null default now(),
+  last_seen timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (serverid, profileid)
+);
+
+alter table public.voice_channel_presence
+  add column if not exists is_muted boolean not null default false;
+
+alter table public.voice_channel_presence
+  add column if not exists is_deafened boolean not null default false;
+
+create index if not exists idx_voice_presence_serverid on public.voice_channel_presence(serverid);
+create index if not exists idx_voice_presence_channelid on public.voice_channel_presence(channelid);
+create index if not exists idx_voice_presence_last_seen on public.voice_channel_presence(last_seen);
+
 create trigger set_updated_at_profiles
 before update on public.profiles
 for each row execute procedure public.set_updated_at();
@@ -135,6 +178,10 @@ for each row execute procedure public.set_updated_at();
 
 create trigger set_updated_at_direct_messages
 before update on public.direct_messages
+for each row execute procedure public.set_updated_at();
+
+create trigger set_updated_at_voice_channel_presence
+before update on public.voice_channel_presence
 for each row execute procedure public.set_updated_at();
 
 create or replace function public.handle_new_user()
@@ -178,6 +225,7 @@ alter table public.messages enable row level security;
 alter table public.conversations enable row level security;
 alter table public.direct_messages enable row level security;
 alter table public.banned_users enable row level security;
+alter table public.voice_channel_presence enable row level security;
 
 create policy "profiles_select_authenticated"
 on public.profiles
@@ -258,6 +306,27 @@ as $$
       and profileid = p_profileid
   );
 $$;
+
+create policy "voice_presence_select_server_members"
+on public.voice_channel_presence
+for select
+using (public.is_server_member(serverid));
+
+create policy "voice_presence_insert_own"
+on public.voice_channel_presence
+for insert
+with check (auth.uid() = profileid and public.is_server_member(serverid));
+
+create policy "voice_presence_update_own"
+on public.voice_channel_presence
+for update
+using (auth.uid() = profileid and public.is_server_member(serverid))
+with check (auth.uid() = profileid and public.is_server_member(serverid));
+
+create policy "voice_presence_delete_own"
+on public.voice_channel_presence
+for delete
+using (auth.uid() = profileid and public.is_server_member(serverid));
 
 create or replace function public.is_server_admin_or_mod(p_serverid uuid, p_profileid uuid default auth.uid())
 returns boolean
@@ -477,6 +546,117 @@ with check (
   )
 );
 
+-- Global channel message pins
+create table if not exists public.channel_message_pins (
+  id uuid primary key default gen_random_uuid(),
+  channel_id uuid not null references public.channels(id) on delete cascade,
+  message_id uuid not null references public.messages(id) on delete cascade,
+  pinned_by_profile_id uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  unique (message_id)
+);
+
+-- Global channel message reactions
+create table if not exists public.channel_message_reactions (
+  id uuid primary key default gen_random_uuid(),
+  channel_id uuid not null references public.channels(id) on delete cascade,
+  message_id uuid not null references public.messages(id) on delete cascade,
+  emoji text not null,
+  profile_id uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  unique (message_id, emoji, profile_id)
+);
+
+create index if not exists idx_channel_message_pins_channel_id
+on public.channel_message_pins(channel_id, created_at desc);
+
+create index if not exists idx_channel_message_reactions_channel_id
+on public.channel_message_reactions(channel_id, created_at desc);
+
+alter table public.channel_message_pins enable row level security;
+alter table public.channel_message_reactions enable row level security;
+
+create policy "channel_message_pins_select_member"
+on public.channel_message_pins
+for select
+using (
+  exists (
+    select 1
+    from public.channels c
+    join public.members m on m.serverid = c.serverid
+    where c.id = channel_message_pins.channel_id
+      and m.profileid = auth.uid()
+  )
+);
+
+create policy "channel_message_pins_insert_member"
+on public.channel_message_pins
+for insert
+with check (
+  pinned_by_profile_id = auth.uid()
+  and exists (
+    select 1
+    from public.channels c
+    join public.members m on m.serverid = c.serverid
+    where c.id = channel_message_pins.channel_id
+      and m.profileid = auth.uid()
+  )
+);
+
+create policy "channel_message_pins_delete_member"
+on public.channel_message_pins
+for delete
+using (
+  exists (
+    select 1
+    from public.channels c
+    join public.members m on m.serverid = c.serverid
+    where c.id = channel_message_pins.channel_id
+      and m.profileid = auth.uid()
+  )
+);
+
+create policy "channel_message_reactions_select_member"
+on public.channel_message_reactions
+for select
+using (
+  exists (
+    select 1
+    from public.channels c
+    join public.members m on m.serverid = c.serverid
+    where c.id = channel_message_reactions.channel_id
+      and m.profileid = auth.uid()
+  )
+);
+
+create policy "channel_message_reactions_insert_member"
+on public.channel_message_reactions
+for insert
+with check (
+  profile_id = auth.uid()
+  and exists (
+    select 1
+    from public.channels c
+    join public.members m on m.serverid = c.serverid
+    where c.id = channel_message_reactions.channel_id
+      and m.profileid = auth.uid()
+  )
+);
+
+create policy "channel_message_reactions_delete_member"
+on public.channel_message_reactions
+for delete
+using (
+  profile_id = auth.uid()
+  and exists (
+    select 1
+    from public.channels c
+    join public.members m on m.serverid = c.serverid
+    where c.id = channel_message_reactions.channel_id
+      and m.profileid = auth.uid()
+  )
+);
+
 create policy "conversations_select_participant"
 on public.conversations
 for select
@@ -536,7 +716,16 @@ create index if not exists idx_messages_channelid_created_at on public.messages(
 create index if not exists idx_direct_messages_conversationid_created_at on public.direct_messages(conversationid, created_at desc);
 
 -- Discord-style friendships and DM system
-create type public.friendship_status as enum ('PENDING', 'ACCEPTED', 'BLOCKED');
+do $$
+begin
+  if not exists (
+    select 1 from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'friendship_status' and n.nspname = 'public'
+  ) then
+    create type public.friendship_status as enum ('PENDING', 'ACCEPTED', 'BLOCKED');
+  end if;
+end $$;
 
 create table if not exists public.friendships (
   id uuid primary key default gen_random_uuid(),

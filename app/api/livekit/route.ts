@@ -16,6 +16,12 @@ type ChannelPreview = {
   type: 'TEXT' | 'AUDIO' | 'VIDEO';
 };
 
+type DMChannelPreview = {
+  id: string;
+  profile_one_id: string;
+  profile_two_id: string;
+};
+
 type MemberPreview = {
   id: string;
 };
@@ -84,12 +90,51 @@ export async function GET(request: Request) {
     .maybeSingle();
 
   const channel = channelResponse.data;
-  if (!channel) {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-  }
 
-  if (channel.type !== 'AUDIO' && channel.type !== 'VIDEO') {
-    return NextResponse.json({ error: 'LiveKit is only enabled for audio/video channels' }, { status: 400 });
+  if (channel) {
+    if (channel.type !== 'AUDIO' && channel.type !== 'VIDEO') {
+      return NextResponse.json({ error: 'LiveKit is only enabled for audio/video channels' }, { status: 400 });
+    }
+
+    const memberResponse = await (supabase as unknown as {
+      from: (table: string) => {
+        select: (columns: string) => {
+          eq: (column: string, value: string) => {
+            eq: (column: string, value: string) => {
+              maybeSingle: () => Promise<{ data: MemberPreview | null }>;
+            };
+          };
+        };
+      };
+    })
+      .from('members')
+      .select('id')
+      .eq('serverid', channel.serverid)
+      .eq('profileid', user.id)
+      .maybeSingle();
+
+    if (!memberResponse.data) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+  } else {
+    const dmResponse = await (supabase as unknown as {
+      from: (table: string) => {
+        select: (columns: string) => {
+          eq: (column: string, value: string) => {
+            maybeSingle: () => Promise<{ data: DMChannelPreview | null }>;
+          };
+        };
+      };
+    })
+      .from('dm_channels')
+      .select('id, profile_one_id, profile_two_id')
+      .eq('id', room)
+      .maybeSingle();
+
+    const dmChannel = dmResponse.data;
+    if (!dmChannel || (dmChannel.profile_one_id !== user.id && dmChannel.profile_two_id !== user.id)) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
   }
 
   const memberResponse = await (supabase as unknown as {
@@ -102,16 +147,7 @@ export async function GET(request: Request) {
         };
       };
     };
-  })
-    .from('members')
-    .select('id')
-    .eq('serverid', channel.serverid)
-    .eq('profileid', user.id)
-    .maybeSingle();
-
-  if (!memberResponse.data) {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-  }
+  });
 
   // NOTE: In some setups, Supabase type inference can incorrectly resolve this table as `never`.
   // We keep runtime behavior identical, but cast the response to a minimal shape we need.
@@ -156,6 +192,8 @@ export async function GET(request: Request) {
     room,
     canPublish: true,
     canSubscribe: true,
+    canPublishData: true,
+    canUpdateOwnMetadata: true,
   });
 
   const jwt = await token.toJwt();

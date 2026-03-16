@@ -36,6 +36,52 @@ export function PollMessage({
   const [isPollEnded, setIsPollEnded] = useState(false);
   const [isVoting, setIsVoting] = useState(false);
 
+  // Keep local poll state in sync when parent cache receives fresh poll data.
+  useEffect(() => {
+    if (isVoting) return;
+
+    setLocalPollData(pollData);
+    const latestUserVote = (pollData?.voted_users || {})[currentUserId] || [];
+    setSelectedOptions(latestUserVote);
+    if (latestUserVote.length > 0) {
+      setShowResults(true);
+    }
+  }, [pollData, currentUserId, isVoting]);
+
+  // Heartbeat: refresh this poll every 2 seconds to avoid stale UI if realtime misses.
+  useEffect(() => {
+    if (!messageId) return;
+
+    const supabase = createClient();
+    const supabaseAny = supabase as any;
+    let mounted = true;
+
+    const syncPollData = async () => {
+      if (isVoting) return;
+
+      const { data: message, error } = await supabaseAny
+        .from('messages')
+        .select('poll_data')
+        .eq('id', messageId)
+        .maybeSingle();
+
+      if (!mounted || error || !message?.poll_data) return;
+
+      setLocalPollData((prev: any) => {
+        const next = message.poll_data;
+        return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+      });
+    };
+
+    void syncPollData();
+    const interval = setInterval(syncPollData, 2000);
+
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [messageId, isVoting]);
+
   // Calculate votes from voted_users
   const calculateVotes = (data: any) => {
     const voteCounts: Record<string, number> = {};
@@ -60,7 +106,7 @@ export function PollMessage({
   useEffect(() => {
     const updateTimer = () => {
       const now = new Date();
-      const end = new Date(pollData.ends_at);
+      const end = new Date(localPollData.ends_at);
       const diff = end.getTime() - now.getTime();
       
       if (diff <= 0) {
@@ -88,7 +134,7 @@ export function PollMessage({
     const interval = setInterval(updateTimer, 1000); // Her saniye
 
     return () => clearInterval(interval);
-  }, [pollData.ends_at]);
+  }, [localPollData.ends_at]);
 
   const handleOptionClick = (optionId: string) => {
     if (localHasVoted || isPollEnded) return;
@@ -123,7 +169,8 @@ export function PollMessage({
 
     // Save to backend
     const supabase = createClient();
-    const { error } = await supabase
+    const supabaseAny = supabase as any;
+    const { error } = await supabaseAny
       .from('messages')
       .update({ poll_data: updatedPollData })
       .eq('id', messageId);
@@ -156,7 +203,8 @@ export function PollMessage({
 
     // Save to backend
     const supabase = createClient();
-    const { error } = await supabase
+    const supabaseAny = supabase as any;
+    const { error } = await supabaseAny
       .from('messages')
       .update({ poll_data: updatedPollData })
       .eq('id', messageId);
@@ -178,14 +226,14 @@ export function PollMessage({
   return (
     <div className="mt-2 rounded-lg border border-[#3f4147] bg-[#2b2d31] p-4 max-w-md">
       {/* Question */}
-      <h4 className="mb-2 font-semibold text-white">{pollData.question}</h4>
+      <h4 className="mb-2 font-semibold text-white">{localPollData.question}</h4>
       <p className="mb-3 text-xs text-[#b5bac1]">
-        {showResults ? 'Sonuçlar' : pollData.allow_multiple ? 'Birden fazla seç' : 'Bir yanıt seç'}
+        {showResults ? 'Sonuçlar' : localPollData.allow_multiple ? 'Birden fazla seç' : 'Bir yanıt seç'}
       </p>
 
       {/* Options */}
       <div className="space-y-2">
-        {pollData.options.map((option: PollOption) => {
+        {localPollData.options.map((option: PollOption) => {
           const votes = voteCounts[option.id] || 0;
           const percentage = getPercentage(votes);
           const isSelected = selectedOptions.includes(option.id);
@@ -247,7 +295,7 @@ export function PollMessage({
       <div className="mt-3 flex items-center justify-between text-xs text-[#b5bac1]">
         <div className="flex items-center gap-2">
           <button
-            onClick={() => onOpen('pollVoters', { pollData, pollQuestion: pollData.question, messageId })}
+            onClick={() => onOpen('pollVoters', { pollData: localPollData, pollQuestion: localPollData.question, messageId })}
             className="font-medium hover:underline"
           >
             {totalVoters} kişi oy verdi

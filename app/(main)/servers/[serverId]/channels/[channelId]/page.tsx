@@ -147,7 +147,7 @@ export default async function ChannelPage({ params }: ChannelPageProps) {
   }
 
   if (channel.type !== 'TEXT') {
-    return <MediaRoom channelId={channel.id} channelName={channel.name} channelType={channel.type} />;
+    return <MediaRoom channelId={channel.id} channelName={channel.name} channelType={channel.type} serverId={serverId} />;
   }
 
   return (

@@ -25,6 +25,25 @@ type LoginValues = z.infer<typeof loginSchema>;
 type RegisterValues = z.infer<typeof registerSchema>;
 
 const normalizeEmail = (email: string) => email.trim().toLowerCase();
+const KNOWN_ACCOUNTS_KEY = 'drifd-known-accounts';
+const SWITCH_ACCOUNT_KEY = 'drifd-switch-account-email';
+
+function rememberAccount(email: string, username?: string | null) {
+  if (typeof window === 'undefined') return;
+
+  try {
+    const raw = window.localStorage.getItem(KNOWN_ACCOUNTS_KEY);
+    const current = raw ? JSON.parse(raw) as Array<{ email: string; username?: string | null; lastUsedAt: string }> : [];
+    const next = [
+      { email, username: username || null, lastUsedAt: new Date().toISOString() },
+      ...current.filter((item) => item.email !== email),
+    ].slice(0, 10);
+    window.localStorage.setItem(KNOWN_ACCOUNTS_KEY, JSON.stringify(next));
+    window.localStorage.removeItem(SWITCH_ACCOUNT_KEY);
+  } catch {
+    // ignore
+  }
+}
 
 export function AuthScreen() {
   const [mode, setMode] = useState<'login' | 'register'>('login');
@@ -54,6 +73,16 @@ export function AuthScreen() {
     resolver: zodResolver(registerSchema),
     defaultValues: { username: '', email: '', password: '', confirmPassword: '' },
   });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const switchEmail = window.localStorage.getItem(SWITCH_ACCOUNT_KEY);
+    if (!switchEmail) return;
+
+    setMode('login');
+    loginForm.setValue('email', switchEmail, { shouldValidate: true });
+    setFormInfo(`Hesap değiştiriliyor: ${switchEmail}`);
+  }, [loginForm]);
 
   const mapAuthError = (message: string) => {
     const normalized = message.toLowerCase();
@@ -127,13 +156,15 @@ export function AuthScreen() {
 
     // Set user as online and update last_seen
     if (session.user) {
-      await supabase
+      await (supabase as any)
         .from('profiles')
         .update({ 
           status: 'online',
           last_seen: new Date().toISOString()
         })
         .eq('id', session.user.id);
+
+      rememberAccount(email, typeof session.user.user_metadata?.username === 'string' ? session.user.user_metadata.username : null);
     }
 
     // Wait for auth state change event to fire
@@ -180,9 +211,12 @@ export function AuthScreen() {
       setPendingEmail(email);
       setResendCooldown(60);
       setFormInfo('Kayıt başarılı. Doğrulama maili gönderildi. Gelmediyse 60 saniye sonra tekrar gönderebilirsin.');
+      rememberAccount(email, values.username);
 
       return;
     }
+
+    rememberAccount(email, values.username);
 
     // Wait for session to fully sync
     await new Promise(resolve => setTimeout(resolve, 800));

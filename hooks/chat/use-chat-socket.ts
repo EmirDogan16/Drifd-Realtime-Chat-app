@@ -4,6 +4,8 @@ import { useEffect, useRef } from 'react';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 import { useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { createClient } from '@/utils/supabase/client';
+import { canNotifyForScope, canNotifyForServer, getChatScopeKey, showDesktopNotification } from '@/hooks/use-notification-preferences';
+import { playMessageSound } from '@/lib/sound-effects';
 import type { Database } from '@/types/supabase';
 
 type MessageRow = Database['public']['Tables']['messages']['Row'];
@@ -12,6 +14,9 @@ type DMMessageRow = Database['public']['Tables']['dm_channel_messages']['Row'];
 interface UseChatSocketOptions {
   channelId: string;
   isDM?: boolean;
+  serverId?: string;
+  notificationTitle?: string;
+  currentSenderId?: string;
 }
 
 function isMessageRow(value: unknown): value is MessageRow {
@@ -31,15 +36,22 @@ function extractMessageId(value: unknown): string | null {
   return typeof candidate.id === 'string' ? candidate.id : null;
 }
 
-export function useChatSocket({ channelId, isDM = false }: UseChatSocketOptions) {
+export function useChatSocket({ channelId, isDM = false, serverId, notificationTitle, currentSenderId }: UseChatSocketOptions) {
   const queryClient = useQueryClient();
   const lastMessageIdRef = useRef<string | null>(null);
+  const lastNotifiedMessageIdRef = useRef<string | null>(null);
+  const pollFailureCountRef = useRef(0);
+  const heartbeatFailureCountRef = useRef(0);
+  const realtimeHealthyRef = useRef(false);
+  const pollInFlightRef = useRef(false);
+  const heartbeatInFlightRef = useRef(false);
 
   useEffect(() => {
     const supabase = createClient();
     const tableName = isDM ? 'dm_channel_messages' : 'messages';
     const filterField = isDM ? 'dm_channel_id' : 'channelid';
     const queryKey = ['chat', channelId, isDM ? 'dm' : 'channel'];
+    const scopeKey = getChatScopeKey(channelId, isDM);
     
     // AbortController to cancel ongoing requests on cleanup
     const abortController = new AbortController();
@@ -81,9 +93,33 @@ export function useChatSocket({ channelId, isDM = false }: UseChatSocketOptions)
       });
     };
 
-    // POLLING: Check for new messages every 300ms
+    const maybeNotifyIncomingMessage = (row: MessageRow | DMMessageRow) => {
+      const id = (row as { id?: string }).id;
+      if (!id || id === lastNotifiedMessageIdRef.current) return;
+
+      const senderId = isDM ? (row as DMMessageRow).author_id : (row as MessageRow).memberid;
+      if (!senderId || senderId === currentSenderId) return;
+
+      const rawContent = String((row as { content?: unknown }).content ?? '').trim();
+      if (!rawContent || rawContent.startsWith('[ENGAGEMENT]') || rawContent === '[SYSTEM_PIN]') return;
+
+      const allowNotify = canNotifyForScope(scopeKey) && canNotifyForServer(serverId);
+      if (!allowNotify) return;
+
+      lastNotifiedMessageIdRef.current = id;
+      playMessageSound();
+      showDesktopNotification(
+        notificationTitle || (isDM ? 'Yeni DM' : 'Yeni mesaj'),
+        rawContent || 'Yeni bir mesaj geldi.',
+      );
+    };
+
+    // Fallback polling only (used when realtime channel is unhealthy)
     const pollInterval = setInterval(async () => {
       if (!isActive || abortController.signal.aborted) return;
+      if (realtimeHealthyRef.current) return;
+      if (pollInFlightRef.current) return;
+      pollInFlightRef.current = true;
       
       try {
         const query = isDM
@@ -109,30 +145,47 @@ export function useChatSocket({ channelId, isDM = false }: UseChatSocketOptions)
           if ((error as any).code === 'PGRST116') {
             return;
           }
-          
+
+          pollFailureCountRef.current += 1;
+          if (pollFailureCountRef.current >= 3) {
+            clearInterval(pollInterval);
+          }
+
           // Stop polling on critical errors (channel deleted, access denied, etc.)
           clearInterval(pollInterval);
           return;
         }
 
+        pollFailureCountRef.current = 0;
+
         if (data && data.length > 0) {
-          const latestMessage = data[0];
+          const latestMessage = data[0] as any;
           
           // If this is a new message (different ID than last seen)
           if (lastMessageIdRef.current !== latestMessage.id) {
             lastMessageIdRef.current = latestMessage.id;
-            upsertMessage(latestMessage as MessageRow | DMMessageRow);
+            const typedMessage = latestMessage as MessageRow | DMMessageRow;
+            upsertMessage(typedMessage);
+            maybeNotifyIncomingMessage(typedMessage);
           }
         }
       } catch (err) {
         if (!isActive) return;
-        console.error('[useChatSocket] Polling exception:', err);
+        pollFailureCountRef.current += 1;
+        if (pollFailureCountRef.current >= 3) {
+          clearInterval(pollInterval);
+        }
+      } finally {
+        pollInFlightRef.current = false;
       }
-    }, 300); // Poll every 300ms
+    }, 4000);
 
-    // HEARTBEAT: Check for message updates (deleted, edited) every 2 seconds
+    // Slow fallback sync for edits/deletes when realtime is unavailable
     const heartbeatInterval = setInterval(async () => {
       if (!isActive || abortController.signal.aborted) return;
+      if (realtimeHealthyRef.current) return;
+      if (heartbeatInFlightRef.current) return;
+      heartbeatInFlightRef.current = true;
       
       try {
         const query = isDM
@@ -141,13 +194,13 @@ export function useChatSocket({ channelId, isDM = false }: UseChatSocketOptions)
               .select('*')
               .eq('dm_channel_id', channelId)
               .order('created_at', { ascending: false })
-              .limit(20) // Check last 20 messages for updates
+                .limit(12)
           : supabase
               .from('messages')
               .select('*')
               .eq('channelid', channelId)
               .order('created_at', { ascending: false })
-              .limit(20); // Check last 20 messages for updates
+                .limit(12);
 
         const { data, error } = await query;
 
@@ -157,9 +210,15 @@ export function useChatSocket({ channelId, isDM = false }: UseChatSocketOptions)
           if ((error as any).code === 'PGRST116') {
             return;
           }
+          heartbeatFailureCountRef.current += 1;
+          if (heartbeatFailureCountRef.current >= 3) {
+            clearInterval(heartbeatInterval);
+          }
           clearInterval(heartbeatInterval);
           return;
         }
+
+        heartbeatFailureCountRef.current = 0;
 
         if (data && data.length > 0) {
           // Update all messages in cache (including deleted ones)
@@ -169,9 +228,14 @@ export function useChatSocket({ channelId, isDM = false }: UseChatSocketOptions)
         }
       } catch (err) {
         if (!isActive) return;
-        console.error('[useChatSocket] Heartbeat exception:', err);
+        heartbeatFailureCountRef.current += 1;
+        if (heartbeatFailureCountRef.current >= 3) {
+          clearInterval(heartbeatInterval);
+        }
+      } finally {
+        heartbeatInFlightRef.current = false;
       }
-    }, 2000); // Check every 2 seconds
+    }, 20000);
 
     // Also try WebSocket subscription (as fallback/enhancement)
     const channel = supabase.channel(`chat:${channelId}`);
@@ -191,7 +255,9 @@ export function useChatSocket({ channelId, isDM = false }: UseChatSocketOptions)
           if (rowChannelId === channelId) {
             if (payload.new && typeof payload.new === 'object') {
               lastMessageIdRef.current = (payload.new as any).id;
-              upsertMessage(payload.new as MessageRow | DMMessageRow);
+              const typedMessage = payload.new as MessageRow | DMMessageRow;
+              upsertMessage(typedMessage);
+              maybeNotifyIncomingMessage(typedMessage);
             }
           }
         },
@@ -234,7 +300,7 @@ export function useChatSocket({ channelId, isDM = false }: UseChatSocketOptions)
         },
       )
       .subscribe((status) => {
-        // Silently handle connection status - polling is already working
+        realtimeHealthyRef.current = status === 'SUBSCRIBED';
       });
 
     return () => {
@@ -244,5 +310,5 @@ export function useChatSocket({ channelId, isDM = false }: UseChatSocketOptions)
       clearInterval(heartbeatInterval);
       supabase.removeChannel(channel);
     };
-  }, [channelId, isDM, queryClient]);
+  }, [channelId, currentSenderId, isDM, notificationTitle, queryClient, serverId]);
 }

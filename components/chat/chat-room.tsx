@@ -36,7 +36,7 @@ export function ChatRoom({
   const [currentProfileId, setCurrentProfileId] = useState<string | null>(null);
   const [currentMemberRole, setCurrentMemberRole] = useState<'ADMIN' | 'MODERATOR' | 'GUEST' | null>(null);
 
-  useChatSocket({ channelId });
+  useChatSocket({ channelId, serverId, notificationTitle: `#${channelName}`, currentSenderId: memberId });
 
   // Get current user profile ID and role
   useEffect(() => {
@@ -199,8 +199,10 @@ export function ChatRoom({
     <div className="flex h-full flex-col overflow-hidden">
       <ChatHeader 
         channelName={channelName}
+        channelId={channelId}
         showMemberPanel={showMemberPanel}
         onToggleMemberPanel={onToggleMemberPanel}
+        authorsByMemberId={authorsByMemberId}
       />
       <ChatMessages
         messages={messages}

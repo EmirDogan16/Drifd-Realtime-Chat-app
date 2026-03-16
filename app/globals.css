@@ -70,6 +70,19 @@ body {
   animation: status-pulse 2s ease-in-out infinite;
 }
 
+/* LiveKit device menu direction is set by control bar context */
+.voice-menu-up .lk-device-menu {
+  top: auto !important;
+  bottom: calc(100% + 6px) !important;
+  z-index: 40;
+}
+
+.voice-menu-down .lk-device-menu {
+  top: calc(100% + 6px) !important;
+  bottom: auto !important;
+  z-index: 40;
+}
+
 /* Twemoji styles for proper emoji rendering */
 img.emoji {
   height: 1.25rem;

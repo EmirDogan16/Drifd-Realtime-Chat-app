@@ -4,13 +4,30 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
-import { X, User, Bell, Lock, Palette, Info, Upload, Loader2, Gamepad2, LogOut, Mic, Volume2 } from 'lucide-react';
+import { X, User, Bell, Lock, Palette, Info, Upload, Loader2, LogOut, Mic, Volume2 } from 'lucide-react';
 import { useVoiceSettings } from '@/hooks/use-voice-settings';
 import { useModalStore } from '@/hooks/use-modal-store';
 import { createClient } from '@/utils/supabase/client';
 
-type SettingsTab = 'account' | 'privacy' | 'notifications' | 'appearance' | 'about' | 'activity' | 'voice';
+type SettingsTab = 'account' | 'accounts' | 'privacy' | 'notifications' | 'appearance' | 'about' | 'voice';
 type EditMode = 'username' | 'email' | 'password' | null;
+const KNOWN_ACCOUNTS_KEY = 'drifd-known-accounts';
+const SWITCH_ACCOUNT_KEY = 'drifd-switch-account-email';
+
+function readKnownAccounts() {
+  if (typeof window === 'undefined') return [] as Array<{ email: string; username?: string | null; lastUsedAt: string }>;
+  try {
+    const raw = window.localStorage.getItem(KNOWN_ACCOUNTS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeKnownAccounts(accounts: Array<{ email: string; username?: string | null; lastUsedAt: string }>) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(KNOWN_ACCOUNTS_KEY, JSON.stringify(accounts));
+}
 
 /** Enumerate audio devices of a given kind */
 function useSettingsAudioDevices(kind: 'audioinput' | 'audiooutput') {
@@ -333,6 +350,7 @@ export function UserSettingsModal() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [formError, setFormError] = useState('');
   const [formSuccess, setFormSuccess] = useState('');
+  const [knownAccounts, setKnownAccounts] = useState<Array<{ email: string; username?: string | null; lastUsedAt: string }>>([]);
 
   useEffect(() => {
     if (isOpen && type === 'userSettings') {
@@ -357,6 +375,12 @@ export function UserSettingsModal() {
             });
             setNewUsername(profileData.username);
             setNewEmail(user.email || '');
+            const nextAccounts = [
+              { email: user.email || '', username: profileData.username, lastUsedAt: new Date().toISOString() },
+              ...readKnownAccounts().filter((item) => item.email !== user.email),
+            ].slice(0, 10);
+            setKnownAccounts(nextAccounts);
+            writeKnownAccounts(nextAccounts);
           }
         }
         setLoading(false);
@@ -398,6 +422,13 @@ export function UserSettingsModal() {
 
       setProfile({ ...profile, imageurl: publicUrl });
       setFormSuccess('Profil resmi güncellendi!');
+
+      window.dispatchEvent(new CustomEvent('profile-updated', {
+        detail: {
+          profileId: profile.id,
+          imageurl: publicUrl,
+        },
+      }));
       
       console.log('[Profile Update] Avatar updated:', publicUrl);
       
@@ -440,6 +471,13 @@ export function UserSettingsModal() {
       setProfile({ ...profile, username: newUsername.trim() });
       setFormSuccess('Kullanıcı adı güncellendi!');
       setEditMode(null);
+
+      window.dispatchEvent(new CustomEvent('profile-updated', {
+        detail: {
+          profileId: profile.id,
+          username: newUsername.trim(),
+        },
+      }));
       
       console.log('[Profile Update] Username updated:', newUsername.trim());
       
@@ -551,6 +589,25 @@ export function UserSettingsModal() {
     }
   };
 
+  const handleSwitchAccount = async (email: string) => {
+    try {
+      const supabase = createClient();
+      window.localStorage.setItem(SWITCH_ACCOUNT_KEY, email);
+      await supabase.auth.signOut();
+      queryClient.clear();
+      onClose();
+      window.location.assign('/');
+    } catch (error) {
+      console.error('Switch account error:', error);
+    }
+  };
+
+  const handleRemoveKnownAccount = (email: string) => {
+    const next = knownAccounts.filter((item) => item.email !== email);
+    setKnownAccounts(next);
+    writeKnownAccounts(next);
+  };
+
   if (!isOpen || type !== 'userSettings') return null;
 
   const tabCategories = [
@@ -558,13 +615,8 @@ export function UserSettingsModal() {
       title: 'Kullanıcı Ayarları',
       tabs: [
         { id: 'account' as const, label: 'Hesabım', icon: User },
+        { id: 'accounts' as const, label: 'Hesapları Yönet', icon: User },
         { id: 'privacy' as const, label: 'Gizlilik & Güvenlik', icon: Lock },
-      ]
-    },
-    {
-      title: 'Etkinlik Ayarları',
-      tabs: [
-        { id: 'activity' as const, label: 'Kayıtlı Oyunlar', icon: Gamepad2 },
       ]
     },
     {
@@ -861,6 +913,49 @@ export function UserSettingsModal() {
             </div>
           )}
 
+          {activeTab === 'accounts' && (
+            <div className="max-w-2xl">
+              <h2 className="mb-6 text-2xl font-bold text-white">Hesapları Yönet</h2>
+              <div className="rounded-lg border border-drifd-divider bg-drifd-secondary p-6">
+                <h3 className="mb-2 text-sm font-semibold uppercase text-drifd-muted">Kayıtlı Hesaplar</h3>
+                <p className="mb-4 text-sm text-drifd-muted">Bu cihazda kullanılan hesaplar arasında hızlı geçiş yapabilirsin.</p>
+
+                <div className="space-y-3">
+                  {knownAccounts.length === 0 ? (
+                    <div className="rounded-md bg-drifd-hover px-4 py-6 text-sm text-drifd-muted">Kayıtlı hesap bulunamadı.</div>
+                  ) : knownAccounts.map((account) => {
+                    const isCurrent = account.email === profile?.email;
+                    return (
+                      <div key={account.email} className="flex items-center justify-between rounded-md border border-drifd-divider bg-drifd-hover/40 px-4 py-3">
+                        <div>
+                          <div className="font-medium text-white">{account.username || account.email}</div>
+                          <div className="text-sm text-drifd-muted">{account.email}</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {isCurrent ? <span className="text-xs font-semibold text-green-400">Aktif</span> : null}
+                          {!isCurrent ? (
+                            <button
+                              onClick={() => void handleSwitchAccount(account.email)}
+                              className="rounded-md bg-[#6F58F2] px-3 py-2 text-sm font-semibold text-white hover:bg-[#5B47D1]"
+                            >
+                              Bu Hesaba Geç
+                            </button>
+                          ) : null}
+                          <button
+                            onClick={() => handleRemoveKnownAccount(account.email)}
+                            className="rounded-md bg-drifd-secondary px-3 py-2 text-sm font-semibold text-white hover:bg-drifd-tertiary"
+                          >
+                            Kaldır
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
           {activeTab === 'privacy' && (
             <div className="max-w-2xl">
               <h2 className="mb-6 text-2xl font-bold text-white">Gizlilik & Güvenlik</h2>
@@ -934,38 +1029,6 @@ export function UserSettingsModal() {
                     </div>
                   </label>
                 </div>
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'activity' && (
-            <div className="max-w-2xl">
-              <h2 className="mb-6 text-2xl font-bold text-white">Kayıtlı Oyunlar</h2>
-              
-              <div className="mb-6">
-                <p className="text-sm text-drifd-muted mb-4">
-                  Oyunlarla ilgili bilgiler (tür ve kapak görseli gibi) IGDB tarafından sağlanmaktadır.
-                </p>
-              </div>
-
-              <div className="rounded-lg border border-drifd-divider bg-drifd-secondary p-6">
-                <div className="text-center py-12">
-                  <Gamepad2 className="h-16 w-16 text-drifd-muted mx-auto mb-4" />
-                  <h3 className="text-lg font-semibold text-white mb-2">Oyun tespit edilemedi</h3>
-                  <p className="text-sm text-drifd-muted mb-6">
-                    Ne örniyorsun?
-                  </p>
-                  <button className="rounded-md bg-drifd-primary px-4 py-2 text-sm font-semibold text-black hover:opacity-90 transition-opacity">
-                    Ekle
-                  </button>
-                </div>
-              </div>
-
-              <div className="mt-6 rounded-lg border border-drifd-divider bg-drifd-secondary p-4">
-                <h3 className="text-sm font-semibold text-white mb-3">Eklenen Oyunlar</h3>
-                <p className="text-xs text-drifd-muted">
-                  Oyunlarla ilgili bilgiler bu bölümde görünecektir.
-                </p>
               </div>
             </div>
           )}

@@ -29,16 +29,39 @@ export default async function HomePage() {
   const usernameFromAuth =
     (typeof user.user_metadata?.username === 'string' && user.user_metadata.username.trim()) ||
     (user.email ? user.email.split('@')[0] : 'DrifdUser');
+  const avatarFromAuth =
+    (typeof user.user_metadata?.imageUrl === 'string' && user.user_metadata.imageUrl.trim()) ? user.user_metadata.imageUrl
+    : (typeof user.user_metadata?.avatar_url === 'string' && user.user_metadata.avatar_url.trim()) ? user.user_metadata.avatar_url
+    : (typeof user.user_metadata?.picture === 'string' && user.user_metadata.picture.trim()) ? user.user_metadata.picture
+    : null;
+  const buggyGeneratedUsername = `${usernameFromAuth}`.slice(0, 20) + '-' + user.id.slice(0, 4);
+
+  const { data: currentProfile } = await supabase
+    .schema('public')
+    .from('profiles')
+    .select('username, imageurl')
+    .eq('id', user.id)
+    .maybeSingle() as { data: { username?: string | null; imageurl?: string | null } | null };
+
+  const profilePatch: { email: string; username?: string; imageurl?: string | null } = {
+    email: user.email ?? `${user.id}@drifd.local`,
+  };
+
+  // Repair only obviously broken profile values from old ensure behavior.
+  if (currentProfile?.username && currentProfile.username === buggyGeneratedUsername) {
+    profilePatch.username = usernameFromAuth;
+  }
+
+  if ((!currentProfile?.imageurl || !currentProfile.imageurl.trim()) && avatarFromAuth) {
+    profilePatch.imageurl = avatarFromAuth;
+  }
 
   // Avoid `upsert` here: with RLS enabled, INSERT policy may be missing even though UPDATE is allowed.
   // The `handle_new_user` trigger should create the profile row; we just attempt a best-effort UPDATE.
   await supabase
     .schema('public')
     .from('profiles')
-    .update({
-      email: user.email ?? `${user.id}@drifd.local`,
-      username: usernameFromAuth,
-    })
+    .update(profilePatch)
     .eq('id', user.id);
 
   const { data: membership } = await supabase

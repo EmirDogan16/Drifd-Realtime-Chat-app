@@ -15,6 +15,8 @@ interface FriendData {
     id: string;
     username: string;
     imageurl: string | null;
+    status?: 'online' | 'idle' | 'dnd' | 'offline';
+    last_seen?: string | null;
   };
 }
 
@@ -40,26 +42,57 @@ function getInitials(name: string) {
   return `${first?.[0] ?? ''}${second?.[0] ?? ''}`.toUpperCase() || trimmed[0]?.toUpperCase() || '?';
 }
 
+function getDisplayStatus(status?: string | null, lastSeen?: string | null): NonNullable<FriendData['friend']['status']> {
+  const lastSeenDate = lastSeen ? new Date(lastSeen) : null;
+  const isRecentlyActive = lastSeenDate && (Date.now() - lastSeenDate.getTime() < 120000);
+
+  if (status === 'invisible' || !isRecentlyActive) return 'offline';
+  if (status === 'idle' || status === 'dnd') return status;
+  return 'online';
+}
+
+function statusColor(status?: FriendData['friend']['status']) {
+  if (status === 'online') return 'bg-green-500';
+  if (status === 'idle') return 'bg-yellow-500';
+  if (status === 'dnd') return 'bg-red-500';
+  return 'bg-gray-500';
+}
+
+function statusLabel(status?: FriendData['friend']['status']) {
+  if (status === 'online') return 'Çevrimiçi';
+  if (status === 'idle') return 'Boşta';
+  if (status === 'dnd') return 'Rahatsız Etmeyin';
+  return 'Çevrimdışı';
+}
+
 export function FriendsPageContent({ friends, pendingRequests }: FriendsPageContentProps) {
   const [activeTab, setActiveTab] = useState<Tab>('all');
   const [friendsData, setFriendsData] = useState<FriendData[]>(friends);
   const [pendingData, setPendingData] = useState<FriendRequest[]>(pendingRequests);
+  const [openMoreMenuFriendshipId, setOpenMoreMenuFriendshipId] = useState<string | null>(null);
+  const [isRemovingFriendshipId, setIsRemovingFriendshipId] = useState<string | null>(null);
 
   // Poll for profile updates every 1 second
   useEffect(() => {
     const supabase = createClient();
+    let active = true;
+    let inFlight = false;
     
     const refreshProfiles = async () => {
+      if (inFlight) return;
       if (friendsData.length === 0) return;
+      inFlight = true;
       
       const friendIds = friendsData.map(f => f.friendId);
       
       const { data: profiles } = await supabase
         .from('profiles')
-        .select('id, username, imageurl')
+        .select('id, username, imageurl, status, last_seen')
         .in('id', friendIds);
+
+      inFlight = false;
       
-      if (!profiles) return;
+      if (!active || !profiles) return;
       
       // Update friends with fresh profile data
       setFriendsData(prev => {
@@ -67,14 +100,22 @@ export function FriendsPageContent({ friends, pendingRequests }: FriendsPageCont
         const updated = prev.map(friendItem => {
           const profile: any = profiles.find((p: any) => p.id === friendItem.friendId);
           if (profile) {
-            if (friendItem.friend.username !== profile.username || friendItem.friend.imageurl !== profile.imageurl) {
+            const displayStatus = getDisplayStatus(profile.status, profile.last_seen);
+            if (
+              friendItem.friend.username !== profile.username ||
+              friendItem.friend.imageurl !== profile.imageurl ||
+              friendItem.friend.status !== displayStatus ||
+              friendItem.friend.last_seen !== profile.last_seen
+            ) {
               hasChanges = true;
               return {
                 ...friendItem,
                 friend: {
                   ...friendItem.friend,
                   username: profile.username,
-                  imageurl: profile.imageurl
+                  imageurl: profile.imageurl,
+                  status: displayStatus,
+                  last_seen: profile.last_seen
                 }
               };
             }
@@ -85,10 +126,12 @@ export function FriendsPageContent({ friends, pendingRequests }: FriendsPageCont
       });
     };
     
-    // Poll every 1 second for fast updates
-    const interval = setInterval(refreshProfiles, 1000);
+    const interval = setInterval(() => {
+      void refreshProfiles();
+    }, 2000);
     
     return () => {
+      active = false;
       clearInterval(interval);
     };
   }, [friendsData]);
@@ -96,9 +139,13 @@ export function FriendsPageContent({ friends, pendingRequests }: FriendsPageCont
   // Poll for pending request profile updates every 1 second
   useEffect(() => {
     const supabase = createClient();
+    let active = true;
+    let inFlight = false;
     
     const refreshPendingProfiles = async () => {
+      if (inFlight) return;
       if (pendingData.length === 0) return;
+      inFlight = true;
       
       const requesterIds = pendingData.map(r => r.requester_id);
       
@@ -106,8 +153,10 @@ export function FriendsPageContent({ friends, pendingRequests }: FriendsPageCont
         .from('profiles')
         .select('id, username, imageurl')
         .in('id', requesterIds);
+
+      inFlight = false;
       
-      if (!profiles) return;
+      if (!active || !profiles) return;
       
       // Update pending requests with fresh profile data
       setPendingData(prev => {
@@ -133,13 +182,95 @@ export function FriendsPageContent({ friends, pendingRequests }: FriendsPageCont
       });
     };
     
-    // Poll every 1 second for fast updates
-    const interval = setInterval(refreshPendingProfiles, 1000);
+    const interval = setInterval(() => {
+      void refreshPendingProfiles();
+    }, 2000);
     
     return () => {
+      active = false;
       clearInterval(interval);
     };
   }, [pendingData]);
+
+  // Poll pending friend requests every 2 seconds so incoming requests appear without refresh.
+  useEffect(() => {
+    let active = true;
+    let inFlight = false;
+
+    const refreshPendingRequests = async () => {
+      if (inFlight) return;
+      inFlight = true;
+
+      const response = await fetch('/api/friends/pending', {
+        method: 'GET',
+        cache: 'no-store',
+      }).catch(() => null);
+
+      inFlight = false;
+
+      if (!active || !response || !response.ok) return;
+
+      const body = (await response.json().catch(() => ({}))) as { pendingRequests?: FriendRequest[] };
+      const next = body.pendingRequests || [];
+
+      setPendingData((prev) => {
+        const prevSerialized = JSON.stringify(prev);
+        const nextSerialized = JSON.stringify(next);
+        return prevSerialized === nextSerialized ? prev : next;
+      });
+    };
+
+    void refreshPendingRequests();
+
+    const interval = setInterval(() => {
+      void refreshPendingRequests();
+    }, 2000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Poll accepted friends every 2 seconds so accepted requests appear in list without refresh.
+  useEffect(() => {
+    let active = true;
+    let inFlight = false;
+
+    const refreshFriends = async () => {
+      if (inFlight) return;
+      inFlight = true;
+
+      const response = await fetch('/api/friends/list', {
+        method: 'GET',
+        cache: 'no-store',
+      }).catch(() => null);
+
+      inFlight = false;
+
+      if (!active || !response || !response.ok) return;
+
+      const body = (await response.json().catch(() => ({}))) as { friends?: FriendData[] };
+      const next = body.friends || [];
+
+      setFriendsData((prev) => {
+        const prevSerialized = JSON.stringify(prev);
+        const nextSerialized = JSON.stringify(next);
+        return prevSerialized === nextSerialized ? prev : next;
+      });
+    };
+
+    void refreshFriends();
+
+    const interval = setInterval(() => {
+      void refreshFriends();
+    }, 2000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   const tabs: { id: Tab; label: string; badge?: number }[] = [
     { id: 'online', label: 'Çevrimiçi' },
@@ -147,6 +278,53 @@ export function FriendsPageContent({ friends, pendingRequests }: FriendsPageCont
     { id: 'pending', label: 'Bekleyen', badge: pendingData.length },
     { id: 'add', label: 'Arkadaş Ekle' },
   ];
+
+  const onlineFriends = friendsData.filter(
+    (item) => item.friend.status === 'online' || item.friend.status === 'idle' || item.friend.status === 'dnd'
+  );
+
+  useEffect(() => {
+    if (!openMoreMenuFriendshipId) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (target.closest('[data-friend-more-menu]') || target.closest('[data-friend-more-button]')) {
+        return;
+      }
+      setOpenMoreMenuFriendshipId(null);
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [openMoreMenuFriendshipId]);
+
+  const handleRemoveFriend = async (item: FriendData) => {
+    if (isRemovingFriendshipId) return;
+
+    const shouldRemove = window.confirm(`${item.friend.username} arkadaşlardan çıkarılsın mı?`);
+    if (!shouldRemove) return;
+
+    setIsRemovingFriendshipId(item.friendshipId);
+    const supabase = createClient();
+
+    const { error } = await supabase
+      .from('friendships')
+      .delete()
+      .eq('id', item.friendshipId);
+
+    if (error) {
+      console.error('Arkadaş silinemedi:', error);
+      alert('Arkadaş çıkarılırken bir hata oluştu.');
+      setIsRemovingFriendshipId(null);
+      return;
+    }
+
+    setFriendsData((prev) => prev.filter((friend) => friend.friendshipId !== item.friendshipId));
+    setOpenMoreMenuFriendshipId(null);
+    setIsRemovingFriendshipId(null);
+  };
 
   return (
     <div className="flex h-full">
@@ -211,7 +389,7 @@ export function FriendsPageContent({ friends, pendingRequests }: FriendsPageCont
 
             <div className="px-2 mb-2">
               <h3 className="text-xs font-semibold text-drifd-muted uppercase">
-                {activeTab === 'all' ? `Tüm Arkadaşlar — ${friendsData.length}` : `Çevrimiçi — 0`}
+                {activeTab === 'all' ? `Tüm Arkadaşlar — ${friendsData.length}` : `Çevrimiçi — ${onlineFriends.length}`}
               </h3>
             </div>
 
@@ -225,7 +403,7 @@ export function FriendsPageContent({ friends, pendingRequests }: FriendsPageCont
               </div>
             )}
 
-            {activeTab === 'online' && (
+            {activeTab === 'online' && onlineFriends.length === 0 && (
               <div className="text-center py-12">
                 <div className="text-4xl mb-4">😴</div>
                 <h3 className="text-white font-semibold mb-2">Çevrimiçi arkadaş yok</h3>
@@ -235,9 +413,9 @@ export function FriendsPageContent({ friends, pendingRequests }: FriendsPageCont
               </div>
             )}
 
-            {activeTab === 'all' && friendsData.length > 0 && (
+            {(activeTab === 'all' ? friendsData : onlineFriends).length > 0 && (
               <div className="border-t border-drifd-divider">
-                {friendsData.map((item) => (
+                {(activeTab === 'all' ? friendsData : onlineFriends).map((item) => (
                   <div
                     key={item.friendshipId}
                     className="flex items-center justify-between px-2 py-3 border-b border-drifd-divider hover:bg-drifd-hover/30 rounded group"
@@ -257,14 +435,14 @@ export function FriendsPageContent({ friends, pendingRequests }: FriendsPageCont
                             </span>
                           )}
                         </div>
-                        <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-gray-500 rounded-full border-2 border-drifd-secondary" />
+                        <span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-drifd-secondary ${statusColor(item.friend.status)}`} />
                       </div>
                       <div>
                         <div className="text-white font-medium">{item.friend.username}</div>
-                        <div className="text-xs text-drifd-muted">Çevrimdışı</div>
+                        <div className="text-xs text-drifd-muted">{statusLabel(item.friend.status)}</div>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="relative flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                       <Link
                         href={`/direct-messages/${item.friendId}`}
                         className="p-2 bg-drifd-secondary hover:bg-drifd-hover rounded-full"
@@ -275,6 +453,9 @@ export function FriendsPageContent({ friends, pendingRequests }: FriendsPageCont
                         </svg>
                       </Link>
                       <button
+                        type="button"
+                        data-friend-more-button
+                        onClick={() => setOpenMoreMenuFriendshipId((prev) => (prev === item.friendshipId ? null : item.friendshipId))}
                         className="p-2 bg-drifd-secondary hover:bg-drifd-hover rounded-full"
                         title="Daha fazla"
                       >
@@ -284,6 +465,36 @@ export function FriendsPageContent({ friends, pendingRequests }: FriendsPageCont
                           <path d="M12 4C13.1046 4 14 4.89543 14 6C14 7.10457 13.1046 8 12 8C10.8954 8 10 7.10457 10 6C10 4.89543 10.8954 4 12 4Z" />
                         </svg>
                       </button>
+
+                      {openMoreMenuFriendshipId === item.friendshipId && (
+                        <div
+                          data-friend-more-menu
+                          className="absolute right-0 top-11 z-40 min-w-[220px] bg-[#111214] rounded-xl shadow-xl border border-drifd-divider py-2"
+                        >
+                          <Link
+                            href={`/direct-messages/${item.friendId}/call?mode=video&start=1`}
+                            onClick={() => setOpenMoreMenuFriendshipId(null)}
+                            className="w-full block px-3 py-2 text-left text-base text-drifd-text hover:bg-drifd-hover transition-colors"
+                          >
+                            Görüntülü Arama Başlat
+                          </Link>
+                          <Link
+                            href={`/direct-messages/${item.friendId}/call?mode=audio&start=1`}
+                            onClick={() => setOpenMoreMenuFriendshipId(null)}
+                            className="w-full block px-3 py-2 text-left text-base text-drifd-text hover:bg-drifd-hover transition-colors"
+                          >
+                            Sesli Arama Başlat
+                          </Link>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveFriend(item)}
+                            disabled={isRemovingFriendshipId === item.friendshipId}
+                            className="w-full px-3 py-2 text-left text-base text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            Arkadaşı Çıkar
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -299,11 +510,10 @@ export function FriendsPageContent({ friends, pendingRequests }: FriendsPageCont
         <div className="p-4">
           <h3 className="text-xs font-semibold text-drifd-muted uppercase mb-4">Şimdi Aktif</h3>
           
-          {/* Active friends list - for now showing sample data */}
-          {friendsData.length > 0 ? (
+          {onlineFriends.length > 0 ? (
             <div className="space-y-4">
-              {friendsData.slice(0, 3).map((item) => (
-                <div key={item.friendshipId} className="flex items-start gap-3 hover:bg-drifd-hover/20 p-2 rounded cursor-pointer">
+              {onlineFriends.slice(0, 3).map((item) => (
+                <div key={item.friendshipId} className="flex items-center gap-3 hover:bg-drifd-hover/20 p-2 rounded cursor-pointer">
                   <div className="relative flex-shrink-0">
                     <div className="w-10 h-10 rounded-full bg-drifd-hover flex items-center justify-center overflow-hidden">
                       {item.friend.imageurl ? (
@@ -318,20 +528,11 @@ export function FriendsPageContent({ friends, pendingRequests }: FriendsPageCont
                         </span>
                       )}
                     </div>
-                    <span className="absolute -bottom-0.5 -right-0.5 w-4 h-4 bg-green-500 rounded-full border-2 border-drifd-secondary" />
+                    <span className={`absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full border-2 border-drifd-secondary ${statusColor(item.friend.status)}`} />
                   </div>
-                  <div className="flex-1 min-w-0">
+                  <div className="flex-1 min-w-0 self-center">
                     <div className="text-white font-medium text-sm">{item.friend.username}</div>
-                    <div className="text-xs text-drifd-muted mt-0.5">
-                      <div className="flex items-center gap-1">
-                        <span className="w-3 h-3 bg-drifd-hover rounded flex items-center justify-center">
-                          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-                          </svg>
-                        </span>
-                        <span>Minecraft</span>
-                      </div>
-                    </div>
+                    <div className="text-xs text-drifd-muted">{statusLabel(item.friend.status)}</div>
                   </div>
                 </div>
               ))}

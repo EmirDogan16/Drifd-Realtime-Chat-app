@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 
 export interface VoiceSettings {
   isMuted: boolean;
@@ -56,54 +56,74 @@ function broadcast(settings: VoiceSettings) {
 }
 
 export function useVoiceSettings() {
-  const [settings, setSettings] = useState<VoiceSettings>(getStoredSettings);
+  // Keep initial render deterministic between server and client to avoid hydration mismatch.
+  const [settings, setSettings] = useState<VoiceSettings>(DEFAULT_SETTINGS);
+  const settingsRef = useRef(settings);
+
+  useEffect(() => {
+    const stored = getStoredSettings();
+    settingsRef.current = stored;
+    setSettings(stored);
+  }, []);
+
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+
+  const commitSettings = useCallback((next: VoiceSettings, shouldBroadcast = true) => {
+    settingsRef.current = next;
+    setSettings(next);
+    setStoredSettings(next);
+
+    if (shouldBroadcast) {
+      setTimeout(() => {
+        broadcast(next);
+      }, 0);
+    }
+  }, []);
 
   useEffect(() => {
     const handleChange = (e: Event) => {
       const ce = e as CustomEvent<VoiceSettings>;
-      if (ce.detail) setSettings(ce.detail);
-      else setSettings(getStoredSettings());
+      if (ce.detail) {
+        commitSettings(ce.detail, false);
+      } else {
+        commitSettings(getStoredSettings(), false);
+      }
+    };
+
+    const handleStorage = () => {
+      commitSettings(getStoredSettings(), false);
     };
 
     window.addEventListener('voice-settings-changed', handleChange);
-    window.addEventListener('storage', () => setSettings(getStoredSettings()));
+    window.addEventListener('storage', handleStorage);
 
     return () => {
       window.removeEventListener('voice-settings-changed', handleChange);
-      window.removeEventListener('storage', () => setSettings(getStoredSettings()));
+      window.removeEventListener('storage', handleStorage);
     };
-  }, []);
+  }, [commitSettings]);
 
   const update = useCallback((patch: Partial<VoiceSettings>) => {
-    setSettings(prev => {
-      const next = { ...prev, ...patch };
-      setStoredSettings(next);
-      broadcast(next);
-      return next;
-    });
-  }, []);
+    const next = { ...settingsRef.current, ...patch };
+    commitSettings(next);
+  }, [commitSettings]);
 
   const toggleMute = useCallback(() => {
-    setSettings(prev => {
-      const next = { ...prev, isMuted: !prev.isMuted };
-      setStoredSettings(next);
-      broadcast(next);
-      return next;
-    });
-  }, []);
+    const next = { ...settingsRef.current, isMuted: !settingsRef.current.isMuted };
+    commitSettings(next);
+  }, [commitSettings]);
 
   const toggleDeafen = useCallback(() => {
-    setSettings(prev => {
-      const next = {
-        ...prev,
-        isMuted: !prev.isDeafened ? true : prev.isMuted,
-        isDeafened: !prev.isDeafened,
-      };
-      setStoredSettings(next);
-      broadcast(next);
-      return next;
-    });
-  }, []);
+    const current = settingsRef.current;
+    const next = {
+      ...current,
+      isMuted: !current.isDeafened ? true : current.isMuted,
+      isDeafened: !current.isDeafened,
+    };
+    commitSettings(next);
+  }, [commitSettings]);
 
   return {
     ...settings,

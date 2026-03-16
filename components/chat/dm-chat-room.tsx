@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { useChatQuery } from '@/hooks/chat/use-chat-query';
 import { useChatSocket } from '@/hooks/chat/use-chat-socket';
 import { ChatMessages } from '@/components/chat/chat-messages';
@@ -26,7 +26,12 @@ export function DMChatRoom({ dmChannelId, friendUsername: initialFriendUsername,
   const [currentUserProfile, setCurrentUserProfile] = useState<{ username: string; avatarUrl: string | null }>({ username: '', avatarUrl: null });
 
   // Enable real-time updates for DM messages
-  useChatSocket({ channelId: dmChannelId, isDM: true });
+  useChatSocket({
+    channelId: dmChannelId,
+    isDM: true,
+    notificationTitle: friendUsername || 'Direkt Mesaj',
+    currentSenderId: currentUserId,
+  });
 
   // Fetch current user profile
   useEffect(() => {
@@ -50,18 +55,24 @@ export function DMChatRoom({ dmChannelId, friendUsername: initialFriendUsername,
     fetchCurrentUser();
   }, [currentUserId]);
 
-  // Poll for profile updates every 1 second
+  // Keep profile cards fresh with light polling
   useEffect(() => {
     const supabase = createClient();
+    let active = true;
+    let inFlight = false;
     
     const refreshProfiles = async () => {
+      if (inFlight) return;
+      inFlight = true;
       // Refresh both current user and friend profiles
       const { data: profiles } = await supabase
         .from('profiles')
         .select('id, username, imageurl')
         .in('id', [currentUserId, friendId]);
+
+      inFlight = false;
       
-      if (!profiles) return;
+      if (!active || !profiles) return;
       
       profiles.forEach((profile: any) => {
         if (profile.id === currentUserId) {
@@ -80,13 +91,16 @@ export function DMChatRoom({ dmChannelId, friendUsername: initialFriendUsername,
       });
     };
     
-    // Poll every 1 second for fast updates
-    const interval = setInterval(refreshProfiles, 1000);
+    void refreshProfiles();
+    const interval = setInterval(() => {
+      void refreshProfiles();
+    }, 15000);
     
     return () => {
+      active = false;
       clearInterval(interval);
     };
-  }, [currentUserId, friendId, friendUsername, friendAvatar]);
+  }, [currentUserId, friendId]);
 
   // Update friend profile only when props change
   useEffect(() => {
@@ -159,10 +173,11 @@ export function DMChatRoom({ dmChannelId, friendUsername: initialFriendUsername,
         hasNextPage={Boolean(hasNextPage)}
         onLoadMore={() => void fetchNextPage()}
         authorsByMemberId={authorsByProfileId}
+        channelId={dmChannelId}
         isDM={true}
         currentProfileId={currentUserId}
       />
-      <ChatInput channelId={dmChannelId} isDM={true} currentProfileId={currentUserId} />
+      <ChatInput channelId={dmChannelId} isDM={true} currentProfileId={currentUserId} dmFriendId={friendId} />
     </div>
   );
 }

@@ -48,6 +48,11 @@ export function CreatePollModal() {
       return;
     }
 
+    if (!data.channelId || !data.memberId) {
+      alert('Anket sadece sunucu metin kanalında oluşturulabilir.');
+      return;
+    }
+
     const validAnswers = answers.filter(a => a.trim());
     const endsAt = new Date(Date.now() + parseInt(duration) * 60 * 60 * 1000).toISOString();
 
@@ -91,18 +96,25 @@ export function CreatePollModal() {
 
     // Save poll to database
     const supabase = createClient();
-    const { error } = await supabase
+    const insertPayload = {
+      content: question,
+      poll_data: pollData,
+      memberid: data.memberId,
+      channelid: data.channelId,
+      deleted: false,
+    };
+
+    const { error } = await (supabase as any)
       .from('messages')
-      .insert({
-        content: question,
-        poll_data: pollData,
-        memberid: data.memberId,
-        channelid: data.channelId,
-        deleted: false,
-      });
+      .insert(insertPayload);
 
     if (error) {
-      console.error('Error creating poll:', error);
+      console.error('Error creating poll:', {
+        message: error.message,
+        code: (error as any).code,
+        details: (error as any).details,
+        hint: (error as any).hint,
+      });
       // Remove optimistic message on error
       queryClient.setQueryData<InfiniteData<any[]>>(queryKey, (prev) => {
         if (!prev) return prev;
@@ -111,6 +123,8 @@ export function CreatePollModal() {
           pages: prev.pages.map((page) => page.filter((item) => item.id !== pollMessage.id)),
         };
       });
+      alert(`Anket oluşturulamadı: ${error.message || 'Bilinmeyen hata'}`);
+      return;
     }
 
     handleClose();

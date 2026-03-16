@@ -13,6 +13,7 @@ import { PollVotersModal } from '@/components/modals/poll-voters-modal';
 import { ChannelSettingsModal } from '@/components/modals/channel-settings-modal';
 import { TextChannelSettingsModal } from '@/components/modals/text-channel-settings-modal';
 import { ServerSettingsModal } from '@/components/modals/server-settings-modal';
+import { ForwardMessageModal } from '@/components/modals/forward-message-modal';
 
 export function ModalProvider() {
   return (
@@ -30,6 +31,7 @@ export function ModalProvider() {
       <ChannelSettingsModal />
       <TextChannelSettingsModal />
       <ServerSettingsModal />
+      <ForwardMessageModal />
     </>
   );
 }

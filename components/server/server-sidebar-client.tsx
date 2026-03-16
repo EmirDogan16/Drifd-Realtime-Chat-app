@@ -60,6 +60,7 @@ export function ServerSidebarClient({ serverId }: ServerSidebarClientProps) {
   const [categoryNames, setCategoryNames] = useState<Record<string, string>>({});
   const isDraggingCategoryRef = useRef(false);
   const isDraggingChannelRef = useRef(false);
+  const currentUserIdRef = useRef<string | null>(null);
 
   // Sensor for category dragging - requires minimum distance to avoid conflicts
   const categorySensors = useSensors(
@@ -86,6 +87,7 @@ export function ServerSidebarClient({ serverId }: ServerSidebarClientProps) {
     } = await supabase.auth.getUser();
 
     if (user) {
+      currentUserIdRef.current = user.id;
       const { data: profileData } = await supabase
         .from('profiles')
         .select('id, username, imageurl')
@@ -95,11 +97,16 @@ export function ServerSidebarClient({ serverId }: ServerSidebarClientProps) {
 
       // Check if user is banned from this server
       if (profileData) {
+        const profileId = (profileData as { id?: string } | null)?.id;
+        if (!profileId) {
+          window.location.href = '/';
+          return;
+        }
         const { data: banData } = await supabase
           .from('banned_users')
           .select('id')
           .eq('serverid', serverId)
-          .eq('profileid', profileData.id)
+          .eq('profileid', profileId)
           .maybeSingle();
 
         if (banData) {
@@ -185,20 +192,18 @@ export function ServerSidebarClient({ serverId }: ServerSidebarClientProps) {
     window.addEventListener('categoryUpdated', handleCategoryUpdated);
     window.addEventListener('categoryDeleted', handleCategoryDeleted);
 
-    // Polling: Check for channel updates (name, position, etc.) every 2 seconds
+    // Polling: keep light to avoid request saturation during voice usage
     const pollingInterval = setInterval(async () => {
       const supabase = createClient();
-      
-      // Get current user for ban/member checks
-      const { data: { user } } = await supabase.auth.getUser();
+      const currentUserId = currentUserIdRef.current;
       
       // Check if current user is still a member (catches bans and kicks)
-      if (user) {
+      if (currentUserId) {
         const { data: memberData } = await supabase
           .from('members')
           .select('id')
           .eq('serverid', serverId)
-          .eq('profileid', user.id)
+          .eq('profileid', currentUserId)
           .maybeSingle();
 
         if (!memberData) {
@@ -213,7 +218,7 @@ export function ServerSidebarClient({ serverId }: ServerSidebarClientProps) {
           .from('banned_users')
           .select('id')
           .eq('serverid', serverId)
-          .eq('profileid', user.id)
+          .eq('profileid', currentUserId)
           .maybeSingle();
 
         if (banData) {
@@ -290,7 +295,7 @@ export function ServerSidebarClient({ serverId }: ServerSidebarClientProps) {
           }
         }
       }
-    }, 2000); // Poll every 2 seconds
+    }, 10000); // Poll every 10 seconds
     
     return () => {
       window.removeEventListener('channelCreated', handleChannelCreated);

@@ -1,4 +1,6 @@
 import { ModalProvider } from '@/components/modals/modal-provider';
+import { GlobalServerVoiceSession } from '@/components/media/global-server-voice-session';
+import { GlobalDMCallSession } from '@/components/media/global-dm-call-session';
 import { NavigationSidebar } from '@/components/navigation/navigation-sidebar';
 import { createClient } from '@/utils/supabase/server';
 
@@ -19,6 +21,8 @@ export default async function MainLayout({ children }: { children: React.ReactNo
     <div className="flex h-screen bg-drifd-bg text-drifd-text overflow-hidden">
       <NavigationSidebar />
       <div className="flex flex-1 overflow-hidden">{children}</div>
+      <GlobalServerVoiceSession />
+      <GlobalDMCallSession />
       <ModalProvider />
     </div>
   );

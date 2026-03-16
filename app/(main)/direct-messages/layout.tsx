@@ -48,13 +48,35 @@ export default async function DirectMessagesLayout({
     .select('id, profile_one_id, profile_two_id, last_message_at')
     .or(`profile_one_id.eq.${user.id},profile_two_id.eq.${user.id}`);
 
-  // Create a map of friend_id -> last_message_at
-  const dmMap = new Map<string, string>();
+  const dmChannelIds = ((dmChannels as any) || []).map((channel: any) => channel.id as string);
+  const latestMessageByChannelId = new Map<string, string>();
+
+  if (dmChannelIds.length > 0) {
+    // Fallback for environments where dm_channels.last_message_at is not reliably updated.
+    const { data: dmMessages } = await supabase
+      .from('dm_channel_messages')
+      .select('dm_channel_id, created_at')
+      .in('dm_channel_id', dmChannelIds)
+      .order('created_at', { ascending: false });
+
+    (dmMessages as any)?.forEach((message: any) => {
+      if (!latestMessageByChannelId.has(message.dm_channel_id)) {
+        latestMessageByChannelId.set(message.dm_channel_id, message.created_at);
+      }
+    });
+  }
+
+  // Create a map of friend_id -> channel metadata
+  const dmMap = new Map<string, { channelId: string; lastMessageAt: string | null }>();
   (dmChannels as any)?.forEach((channel: any) => {
     const friendId = channel.profile_one_id === user.id 
       ? channel.profile_two_id 
       : channel.profile_one_id;
-    dmMap.set(friendId, channel.last_message_at);
+    const persistedLastMessageAt = channel.last_message_at || latestMessageByChannelId.get(channel.id) || null;
+    dmMap.set(friendId, {
+      channelId: channel.id,
+      lastMessageAt: persistedLastMessageAt,
+    });
   });
 
   // Process friendships and merge with DM data
@@ -66,7 +88,8 @@ export default async function DirectMessagesLayout({
       friendshipId: friendship.id,
       friendId: friend.id,
       friend,
-      lastMessageAt: dmMap.get(friend.id) || null
+      dmChannelId: dmMap.get(friend.id)?.channelId || null,
+      lastMessageAt: dmMap.get(friend.id)?.lastMessageAt || null
     };
   }) || [];
 
@@ -103,13 +126,7 @@ export default async function DirectMessagesLayout({
             <div className="text-xs font-semibold text-drifd-muted uppercase px-2 mb-1">
               DIRECT MESSAGES
             </div>
-            {friendList.length === 0 ? (
-              <div className="px-2 py-4 text-sm text-drifd-muted text-center">
-                No messages yet
-              </div>
-            ) : (
-              <DMFriendsList friends={friendList} />
-            )}
+            <DMFriendsList friends={friendList} />
           </div>
         </div>
 

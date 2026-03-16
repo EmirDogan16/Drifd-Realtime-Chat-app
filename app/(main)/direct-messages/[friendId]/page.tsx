@@ -1,6 +1,10 @@
 import { redirect } from 'next/navigation';
+import Link from 'next/link';
 import { createClient } from '@/utils/supabase/server';
 import { DMChatRoom } from '@/components/chat/dm-chat-room';
+import { DMHeader } from '@/components/chat/dm-header';
+import { NotificationToggleButton } from '@/components/chat/notification-toggle-button';
+import { PinnedMessagesButton } from '@/components/chat/pinned-messages-button';
 
 // Disable caching for profile data freshness
 export const revalidate = 0;
@@ -23,24 +27,46 @@ export default async function DirectMessageChatPage({ params }: DirectMessageCha
 
   const { friendId } = await params;
 
-  // Get friend profile
-  const { data: friendProfile, error: friendError } = await supabase
-    .from('profiles')
-    .select('id, username, imageurl')
-    .eq('id', friendId)
-    .single();
+  const [{ data: friendProfile, error: friendError }, { data: currentUserProfile }] = await Promise.all([
+    supabase
+      .from('profiles')
+      .select('id, username, imageurl')
+      .eq('id', friendId)
+      .single(),
+    supabase
+      .from('profiles')
+      .select('id, username, imageurl')
+      .eq('id', user.id)
+      .maybeSingle(),
+  ]);
 
   if (friendError || !friendProfile) {
     redirect('/direct-messages');
   }
 
   const friend = friendProfile as any;
+  const currentUserDisplayName = (currentUserProfile as any)?.username || user.email?.split('@')[0] || 'Kullanıcı';
+  const currentUserAvatar = ((currentUserProfile as any)?.imageurl ?? null) as string | null;
+
+  const dmAuthorsByProfileId = {
+    [user.id]: {
+      username: currentUserDisplayName,
+      avatarUrl: currentUserAvatar,
+      profileId: user.id,
+    },
+    [friend.id]: {
+      username: friend.username,
+      avatarUrl: friend.imageurl,
+      profileId: friend.id,
+    },
+  };
 
   // Get or create DM channel
   let { data: dmChannel } = await supabase
     .from('dm_channels')
     .select('id')
     .or(`and(profile_one_id.eq.${user.id},profile_two_id.eq.${friendId}),and(profile_one_id.eq.${friendId},profile_two_id.eq.${user.id})`)
+    .limit(1)
     .maybeSingle();
 
   // If no DM channel exists, create one
@@ -56,63 +82,59 @@ export default async function DirectMessageChatPage({ params }: DirectMessageCha
 
     if (!createError && newChannel) {
       dmChannel = newChannel;
+    } else {
+      const { data: existingChannel } = await supabase
+        .from('dm_channels')
+        .select('id')
+        .or(`and(profile_one_id.eq.${user.id},profile_two_id.eq.${friendId}),and(profile_one_id.eq.${friendId},profile_two_id.eq.${user.id})`)
+        .limit(1)
+        .maybeSingle();
+
+      if (existingChannel) {
+        dmChannel = existingChannel;
+      }
     }
   }
 
   const channel = dmChannel as any;
+
+  if (!channel?.id) {
+    redirect('/direct-messages');
+  }
 
   return (
     <div className="flex flex-col flex-1 h-full overflow-hidden">
       {/* DM Header */}
       <header className="flex h-12 items-center justify-between border-b border-drifd-divider px-4 bg-drifd-secondary/40 flex-shrink-0">
         {/* Left: Friend avatar, username and online status */}
-        <div className="flex items-center gap-3">
-          {/* Friend avatar with online indicator */}
-          <div className="relative flex-shrink-0">
-            <div className="w-8 h-8 rounded-full bg-drifd-hover flex items-center justify-center overflow-hidden">
-              {friend.imageurl ? (
-                <img src={friend.imageurl} alt={friend.username} className="w-full h-full object-cover" />
-              ) : (
-                <span className="text-xs font-bold text-white">
-                  {friend.username.slice(0, 2).toUpperCase()}
-                </span>
-              )}
-            </div>
-            <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-green-500 rounded-full border-2 border-drifd-secondary" />
-          </div>
-          
-          {/* Username and activity */}
-          <div className="flex flex-col">
-            <h2 className="text-base font-semibold text-white leading-tight">{friend.username}</h2>
-            {/* Activity status - simulated for demo */}
-            <div className="text-xs text-drifd-muted flex items-center gap-1">
-              <span>🎮</span>
-              <span>Minecraft oynuyor</span>
-            </div>
-          </div>
-        </div>
+        <DMHeader friendId={friendId} initialUsername={friend.username} initialImageUrl={friend.imageurl} />
 
         {/* Right: Action buttons and search */}
         <div className="flex items-center gap-2">
+          <NotificationToggleButton channelId={channel.id} isDM={true} />
+          <PinnedMessagesButton channelId={channel.id} isDM={true} authorsByMemberId={dmAuthorsByProfileId} />
+
           {/* Voice call */}
-          <button 
+          <Link
+            href={`/direct-messages/${friendId}/call?mode=audio&start=1`}
             className="p-2 text-drifd-muted hover:text-white hover:bg-drifd-hover rounded transition-colors"
             title="Sesli Arama"
           >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M11.383 3.07904C11.009 2.92504 10.579 3.01004 10.293 3.29604L6 8.00204H3C2.45 8.00204 2 8.45304 2 9.00204V15.002C2 15.552 2.45 16.002 3 16.002H6L10.293 20.71C10.579 20.996 11.009 21.082 11.383 20.927C11.757 20.772 12 20.407 12 20.002V4.00204C12 3.59904 11.757 3.23204 11.383 3.07904ZM14 5.00195V7.00195C16.757 7.00195 19 9.24595 19 12.002C19 14.759 16.757 17.002 14 17.002V19.002C17.86 19.002 21 15.863 21 12.002C21 8.14295 17.86 5.00195 14 5.00195ZM14 9.00195C15.654 9.00195 17 10.349 17 12.002C17 13.657 15.654 15.002 14 15.002V13.002C14.551 13.002 15 12.553 15 12.002C15 11.451 14.551 11.002 14 11.002V9.00195Z"/>
               </svg>
-            </button>
+          </Link>
             
             {/* Video call */}
-            <button 
+            <Link
+              href={`/direct-messages/${friendId}/call?mode=video&start=1`}
               className="p-2 text-drifd-muted hover:text-white hover:bg-drifd-hover rounded transition-colors"
               title="Görüntülü Arama"
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M21.526 8.149C21.231 7.966 20.862 7.951 20.553 8.105L18 9.382V7C18 5.897 17.103 5 16 5H4C2.897 5 2 5.897 2 7V17C2 18.104 2.897 19 4 19H16C17.103 19 18 18.104 18 17V14.618L20.553 15.894C20.694 15.965 20.847 16 21 16C21.183 16 21.365 15.949 21.526 15.851C21.82 15.668 22 15.347 22 15V9C22 8.653 21.82 8.332 21.526 8.149Z"/>
               </svg>
-            </button>
+            </Link>
             
             {/* Toggle user profile sidebar */}
             <button 
